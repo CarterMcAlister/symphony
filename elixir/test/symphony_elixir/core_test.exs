@@ -105,7 +105,10 @@ defmodule SymphonyElixir.CoreTest do
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+
+    assert Map.get(hooks, "after_create") =~
+             "git clone --depth 1 https://github.com/CarterMcAlister/symphony ."
+
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -543,15 +546,15 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+    {state, observed_at_ms} = wait_for_retry_attempt(pid, issue_id)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, 1_000)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -584,14 +587,14 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+    {state, observed_at_ms} = wait_for_retry_attempt(pid, issue_id)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, 40_000)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -623,14 +626,14 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+    {state, observed_at_ms} = wait_for_retry_attempt(pid, issue_id)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, 10_000)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -750,11 +753,29 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+  defp assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, expected_delay_ms) do
+    assert due_at_ms >= sent_at_ms + expected_delay_ms
+    assert due_at_ms <= observed_at_ms + expected_delay_ms
+  end
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+  defp wait_for_retry_attempt(pid, issue_id, deadline_ms \\ System.monotonic_time(:millisecond) + 2_000)
+
+  defp wait_for_retry_attempt(pid, issue_id, deadline_ms)
+       when is_pid(pid) and is_binary(issue_id) and is_integer(deadline_ms) do
+    state = :sys.get_state(pid)
+
+    if Map.has_key?(state.retry_attempts, issue_id) do
+      {state, System.monotonic_time(:millisecond)}
+    else
+      now_ms = System.monotonic_time(:millisecond)
+
+      if now_ms >= deadline_ms do
+        flunk("retry attempt for #{issue_id} was not scheduled before timeout")
+      else
+        Process.sleep(10)
+        wait_for_retry_attempt(pid, issue_id, deadline_ms)
+      end
+    end
   end
 
   defp settle_orchestrator_for_stateful_test(pid) when is_pid(pid) do
