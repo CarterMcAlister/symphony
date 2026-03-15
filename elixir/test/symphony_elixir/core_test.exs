@@ -16,6 +16,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.task_label == nil
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -105,7 +106,10 @@ defmodule SymphonyElixir.CoreTest do
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+
+    assert Map.get(hooks, "after_create") =~
+             ~r/git clone --depth 1 https:\/\/github\.com\/[^\/]+\/symphony \./
+
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -147,6 +151,18 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "tracker task label trims whitespace and disables blank values" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_task_label: "  backend  ")
+
+    assert Config.settings!().tracker.task_label == "backend"
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_task_label: "   ")
+
+    assert Config.settings!().tracker.task_label == nil
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -543,15 +559,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {state, %{attempt: 1, due_at_ms: due_at_ms}, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_retry_scheduled_between(due_at_ms, 1_000, before_send_ms, observed_ms)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -584,14 +601,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {_, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             retry_entry
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_retry_scheduled_between(due_at_ms, 40_000, before_send_ms, observed_ms)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -623,14 +642,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {_, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             retry_entry
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_retry_scheduled_between(due_at_ms, 10_000, before_send_ms, observed_ms)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -750,11 +771,35 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+  defp assert_retry_scheduled_between(
+         due_at_ms,
+         expected_delay_ms,
+         earliest_schedule_ms,
+         latest_observed_ms
+       ) do
+    scheduled_at_ms = due_at_ms - expected_delay_ms
+    assert scheduled_at_ms >= earliest_schedule_ms
+    assert scheduled_at_ms <= latest_observed_ms
+  end
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+  defp wait_for_retry_entry(pid, issue_id, deadline_ms)
+       when is_pid(pid) and is_binary(issue_id) and is_integer(deadline_ms) do
+    state = :sys.get_state(pid)
+
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        now_ms = System.monotonic_time(:millisecond)
+
+        if now_ms >= deadline_ms do
+          flunk("retry entry for #{issue_id} did not appear before timeout")
+        else
+          Process.sleep(10)
+          wait_for_retry_entry(pid, issue_id, deadline_ms)
+        end
+
+      retry_entry ->
+        {state, retry_entry, System.monotonic_time(:millisecond)}
+    end
   end
 
   defp settle_orchestrator_for_stateful_test(pid) when is_pid(pid) do
@@ -1481,6 +1526,143 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) == "Implementation handoff for MT-782"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner promotes todo issues after the research workflow completes" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-research-todo-post-transition-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_tracker_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-research"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-research"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-implement"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        System.delete_env("SYMP_TEST_CODEx_TRACE")
+        restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Implementation handoff for {{ issue.identifier }} state={{ issue.state }}",
+        max_turns: 2
+      )
+
+      File.write!(
+        Workflow.research_workflow_file_path(),
+        "Research packet for {{ issue.identifier }} state={{ issue.state }}\n"
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:research_todo_fetch_count, 0) + 1
+        Process.put(:research_todo_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        state =
+          case attempt do
+            1 -> "In Progress"
+            _ -> "Done"
+          end
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-research-todo",
+             identifier: "MT-783",
+             title: "Promote todo after research",
+             description: "Research handoff flow",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-research-todo",
+        identifier: "MT-783",
+        title: "Promote todo after research",
+        description: "Research handoff flow",
+        state: "Todo",
+        url: "https://example.org/issues/MT-783",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:memory_tracker_state_update, "issue-research-todo", "In Progress"}
+      assert_receive {:issue_state_fetch, 1}
+      assert_receive {:issue_state_fetch, 2}
+
+      turn_texts =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert Enum.at(turn_texts, 0) == "Research packet for MT-783 state=Todo"
+      assert Enum.at(turn_texts, 1) == "Implementation handoff for MT-783 state=In Progress"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
       File.rm_rf(test_root)
     end
   end
