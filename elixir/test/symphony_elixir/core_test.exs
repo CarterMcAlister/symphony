@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Config.Schema
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -16,6 +18,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.project_slugs == []
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -44,6 +47,13 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
       tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_linear_project_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: ""
     )
 
     assert {:error, :missing_linear_project_slug} = Config.validate!()
@@ -86,6 +96,20 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: 123)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.project_slugs"
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: ["", "alpha", "alpha", "beta"])
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.project_slug == "alpha"
+    assert Config.settings!().tracker.project_slugs == ["alpha", "beta"]
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slugs: ["gamma", "delta"])
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.project_slug == "gamma"
+    assert Config.settings!().tracker.project_slugs == ["gamma", "delta"]
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -99,7 +123,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert is_list(Map.get(tracker, "project_slugs"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
@@ -107,12 +131,14 @@ defmodule SymphonyElixir.CoreTest do
     assert is_map(hooks)
     assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
+    assert Map.get(hooks, "after_create") =~ "mise run setup"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
+    assert prompt =~ "mise run setup"
+    assert prompt =~ "mise run dev"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -130,6 +156,7 @@ defmodule SymphonyElixir.CoreTest do
 
     assert Config.settings!().tracker.api_key == env_api_key
     assert Config.settings!().tracker.project_slug == "project"
+    assert Config.settings!().tracker.project_slugs == ["project"]
     assert :ok = Config.validate!()
   end
 
@@ -147,6 +174,13 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+    assert Config.settings!().tracker.project_slugs == ["project"]
+  end
+
+  test "project slug normalization helper trims and falls back correctly" do
+    assert Schema.normalize_project_slugs([" alpha ", "alpha", "", "beta"]) == ["alpha", "beta"]
+    assert Schema.normalize_project_slugs(nil, " gamma ") == ["gamma"]
+    assert Schema.normalize_project_slugs(nil, "   ") == []
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do

@@ -1,7 +1,8 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  project_slugs:
+    - "symphony-0c79b11b75ea"
   active_states:
     - Todo
     - In Progress
@@ -21,7 +22,7 @@ hooks:
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+      cd elixir && mise trust && mise run setup
     fi
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
@@ -68,6 +69,11 @@ Instructions:
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
+
+Repository defaults:
+
+- Use `cd elixir && mise run setup` to bootstrap dependencies and generated assets in this repo.
+- Use `cd elixir && mise run dev` to run Symphony locally when runtime validation is needed.
 
 ## Prerequisite: Linear MCP or `linear_graphql` tool is available
 

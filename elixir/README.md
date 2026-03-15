@@ -37,8 +37,9 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
+   - To get a project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
+   - To track multiple Linear projects, list each slug under `tracker.project_slugs`.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
@@ -60,9 +61,8 @@ git clone https://github.com/openai/symphony
 cd symphony/elixir
 mise trust
 mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise run setup
+mise run dev
 ```
 
 ## Configuration
@@ -89,7 +89,8 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  project_slugs:
+    - "..."
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -127,6 +128,8 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
+- This repo defines `mise run setup` for dependency bootstrap and `mise run dev` for the default
+  local Symphony entrypoint.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,

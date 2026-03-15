@@ -1,3 +1,15 @@
 [tools]
 erlang = "28"
 elixir = "1.19.5-otp-28"
+
+[tasks.setup]
+description = "Install Elixir dependencies"
+run = "mix setup"
+
+[tasks.dev]
+description = "Build and run Symphony with the default workflow"
+depends = ["setup"]
+run = """
+mix build
+./bin/symphony ./WORKFLOW.md
+"""

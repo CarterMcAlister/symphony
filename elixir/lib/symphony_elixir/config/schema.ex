@@ -49,6 +49,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:project_slugs, {:array, :string}, default: [])
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -56,12 +57,80 @@ defmodule SymphonyElixir.Config.Schema do
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
+      attrs = normalize_project_slug_attrs(attrs)
+
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :project_slugs, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> update_change(:project_slugs, &normalize_project_slugs/1)
+      |> validate_change(:project_slugs, fn :project_slugs, value ->
+        if is_list(value) do
+          []
+        else
+          [project_slugs: "is invalid"]
+        end
+      end)
+      |> then(fn changeset ->
+        put_change(changeset, :project_slug, get_field_from_project_slugs(changeset))
+      end)
+    end
+
+    defp normalize_project_slug_attrs(attrs) when is_map(attrs) do
+      case Map.fetch(attrs, "project_slugs") do
+        {:ok, value} ->
+          put_project_slug_fields(attrs, value)
+
+        :error ->
+          case Map.fetch(attrs, "project_slug") do
+            {:ok, value} -> put_project_slug_fields(attrs, value)
+            :error -> attrs
+          end
+      end
+    end
+
+    defp put_project_slug_fields(attrs, value) do
+      {project_slugs, project_slug} =
+        case normalize_project_slug_input(value) do
+          {:ok, slugs} -> {slugs, List.first(slugs)}
+          :error -> {value, nil}
+        end
+
+      attrs
+      |> Map.put("project_slugs", project_slugs)
+      |> Map.put("project_slug", project_slug)
+    end
+
+    defp normalize_project_slug_input(value) when is_binary(value) do
+      case String.trim(value) do
+        "" -> {:ok, []}
+        slug -> {:ok, [slug]}
+      end
+    end
+
+    defp normalize_project_slug_input(value) when is_list(value) do
+      if Enum.all?(value, &is_binary/1) do
+        {:ok, normalize_project_slugs(value)}
+      else
+        :error
+      end
+    end
+
+    defp normalize_project_slug_input(_value), do: :error
+
+    defp normalize_project_slugs(values) when is_list(values) do
+      values
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+    end
+
+    defp get_field_from_project_slugs(changeset) do
+      changeset
+      |> get_field(:project_slugs, [])
+      |> List.first()
     end
   end
 
@@ -366,10 +435,16 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    project_slugs =
+      settings.tracker.project_slugs
+      |> normalize_project_slugs(settings.tracker.project_slug)
+
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
+        project_slugs: project_slugs,
+        project_slug: List.first(project_slugs)
     }
 
     workspace = %{
@@ -385,6 +460,32 @@ defmodule SymphonyElixir.Config.Schema do
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
+
+  @doc false
+  @spec normalize_project_slugs([String.t()] | nil) :: [String.t()]
+  def normalize_project_slugs(project_slugs), do: normalize_project_slugs(project_slugs, nil)
+
+  @spec normalize_project_slugs([String.t()] | nil, String.t() | nil) :: [String.t()]
+  def normalize_project_slugs(project_slugs, fallback_slug) when is_list(project_slugs) do
+    project_slugs
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> case do
+      [] -> normalize_project_slugs(nil, fallback_slug)
+      normalized -> normalized
+    end
+  end
+
+  def normalize_project_slugs(nil, fallback_slug) when is_binary(fallback_slug) do
+    case String.trim(fallback_slug) do
+      "" -> []
+      slug -> [slug]
+    end
+  end
+
+  def normalize_project_slugs(nil, _fallback_slug), do: []
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

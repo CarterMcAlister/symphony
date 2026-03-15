@@ -393,16 +393,24 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_project_link_lines do
+    project_slugs = configured_project_slugs()
+
     project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
+      case project_slugs do
+        [] ->
+          colorize("n/a", @ansi_gray)
+
+        [project_slug] ->
           colorize(linear_project_url(project_slug), @ansi_cyan)
 
-        _ ->
-          colorize("n/a", @ansi_gray)
+        slugs ->
+          Enum.map_join(slugs, colorize(", ", @ansi_gray), fn project_slug ->
+            colorize(linear_project_url(project_slug), @ansi_cyan)
+          end)
       end
 
-    project_line = colorize("│ Project: ", @ansi_bold) <> project_part
+    project_label = if length(project_slugs) > 1, do: "│ Projects: ", else: "│ Project: "
+    project_line = colorize(project_label, @ansi_bold) <> project_part
 
     case dashboard_url() do
       url when is_binary(url) ->
@@ -428,6 +436,10 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
+
+  defp configured_project_slugs do
+    Config.settings!().tracker.project_slugs || []
+  end
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
@@ -580,11 +592,81 @@ defmodule SymphonyElixir.StatusDashboard do
         "│"
       ]
     else
-      running
-      |> Enum.sort_by(& &1.identifier)
-      |> Enum.map(&format_running_summary(&1, running_event_width))
+      sorted_running = Enum.sort_by(running, &running_sort_key/1)
+      grouped_running = Enum.chunk_by(sorted_running, &running_group_key/1)
+
+      format_grouped_running_rows(sorted_running, grouped_running, running_event_width)
     end
   end
+
+  defp format_grouped_running_rows(sorted_running, [_single_group], running_event_width) do
+    Enum.map(sorted_running, &format_running_summary(&1, running_event_width))
+  end
+
+  defp format_grouped_running_rows(_sorted_running, grouped_running, running_event_width) do
+    grouped_running
+    |> Enum.with_index()
+    |> Enum.flat_map(&format_project_group_rows(&1, running_event_width))
+  end
+
+  defp format_project_group_rows({entries, index}, running_event_width) do
+    spacer = if index == 0, do: [], else: ["│"]
+    header = "│  " <> colorize("Project: #{running_group_label(hd(entries))}", @ansi_bold)
+    rows = Enum.map(entries, &format_running_summary(&1, running_event_width))
+    spacer ++ [header] ++ rows
+  end
+
+  defp running_sort_key(running_entry) do
+    {
+      running_group_sort_key(running_entry),
+      String.downcase(to_string(running_entry.identifier || ""))
+    }
+  end
+
+  defp running_group_key(running_entry) do
+    {
+      running_group_sort_key(running_entry),
+      running_group_label(running_entry)
+    }
+  end
+
+  defp running_group_sort_key(running_entry) do
+    running_entry
+    |> running_group_slug_or_name()
+    |> to_string()
+    |> String.downcase()
+  end
+
+  defp running_group_label(running_entry) do
+    case {present_project_value(Map.get(running_entry, :project_name)), present_project_value(Map.get(running_entry, :project_slug))} do
+      {project_name, project_slug} when is_binary(project_name) and is_binary(project_slug) ->
+        "#{project_name} (#{project_slug})"
+
+      {project_name, nil} when is_binary(project_name) ->
+        project_name
+
+      {nil, project_slug} when is_binary(project_slug) ->
+        project_slug
+
+      _ ->
+        "unassigned project"
+    end
+  end
+
+  defp running_group_slug_or_name(running_entry) do
+    present_project_value(Map.get(running_entry, :project_name)) ||
+      present_project_value(Map.get(running_entry, :project_slug)) ||
+      ""
+  end
+
+  defp present_project_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp present_project_value(_value), do: nil
 
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do

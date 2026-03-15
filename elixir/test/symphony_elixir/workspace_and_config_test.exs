@@ -317,6 +317,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "state" => %{"name" => "Todo"},
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
+      "project" => %{"name" => "Alpha", "slugId" => "alpha"},
       "assignee" => %{
         "id" => "user-1"
       },
@@ -352,6 +353,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
+    assert issue.project_name == "Alpha"
+    assert issue.project_slug == "alpha"
     assert issue.assigned_to_worker
   end
 
@@ -384,6 +387,51 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     merged = Client.merge_issue_pages_for_test([issue_page_1, issue_page_2])
 
     assert Enum.map(merged, & &1.identifier) == ["MT-1", "MT-2", "MT-3"]
+  end
+
+  test "linear client filters issue fetches across multiple project slugs" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:multi_project_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "issue-1",
+                 "identifier" => "MT-1",
+                 "title" => "Alpha issue",
+                 "state" => %{"name" => "Todo"},
+                 "project" => %{"name" => "Alpha", "slugId" => "alpha"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               },
+               %{
+                 "id" => "issue-2",
+                 "identifier" => "MT-2",
+                 "title" => "Beta issue",
+                 "state" => %{"name" => "In Progress"},
+                 "project" => %{"name" => "Beta", "slugId" => "beta"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               }
+             ],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issues} =
+             Client.fetch_issues_by_states_for_test(["alpha", "beta"], ["Todo", "In Progress"], graphql_fun)
+
+    assert Enum.map(issues, &{&1.identifier, &1.project_slug}) == [{"MT-1", "alpha"}, {"MT-2", "beta"}]
+
+    assert_receive {:multi_project_query, query, variables}
+    assert query =~ "slugId: {in: $projectSlugs}"
+    assert variables.projectSlugs == ["alpha", "beta"]
+    assert variables.stateNames == ["Todo", "In Progress"]
   end
 
   test "linear client paginates issue state fetches by id beyond one page" do
@@ -741,6 +789,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
+    assert config.tracker.project_slugs == []
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
