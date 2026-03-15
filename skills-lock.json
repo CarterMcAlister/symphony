@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-slack": {
+      "source": "stablyai/agent-slack",
+      "sourceType": "github",
+      "computedHash": "2aeb4011b51d612583dccacef03acdc9d1a004909cc82b2e4d56d098c9c480d2"
+    },
+    "context7": {
+      "source": "intellectronica/agent-skills",
+      "sourceType": "github",
+      "computedHash": "fccbea654f8e35824a8bdce3e059e206efeb6c1fab9f6c096c3867e761081983"
+    },
+    "use-railway": {
+      "source": "railwayapp/railway-skills",
+      "sourceType": "github",
+      "computedHash": "3f3ce652ec70c778e5482c12ffc3f2152c790d786c4ed03291c95d22558ca2ee"
+    }
+  }
+}

@@ -23,18 +23,18 @@ Research instructions:
    - issue documents
 3. Gather the best available evidence for the ticket from:
    - the Linear issue and linked discussion
-   - relevant Slack conversations when the configured tools expose them
+   - other relevant linear tickets
+   - relevant Slack conversations when the configured tools expose them (use agent-slack skill)
    - official docs or primary-source web research when external documentation is needed
-   - Railway production logs or metrics when runtime evidence is needed and the configured tools expose them
+   - Railway production logs or metrics when runtime evidence is needed and the configured tools expose them. (use-railway skill)
 4. Start in plan mode and produce a concise PRD/spec for the implementation phase.
 5. Upsert these Linear documents on the issue with exact, consistent titles:
    - `Research`
    - `Research - PRD`
-   - `Research - Questions`
 6. Reuse existing documents with those titles when they already exist. Update them instead of creating duplicates.
 7. Put the evidence trail, assumptions, and source links in `Research`.
 8. Put the implementation-ready PRD/spec in `Research - PRD`.
-9. Put every unresolved implementation question, open dependency, or missing access gap in `Research - Questions`.
+9. Put every unresolved implementation question, open dependency, or missing access gap in a comment on the ticket titled `## Open Questions`
 10. If a source is unavailable in-session, record that gap in `Research` and continue with the remaining sources instead of asking a human for help.
 11. End the turn after the research documents are attached. The implementation workflow will start next.
 
@@ -78,7 +78,9 @@ query IssueResearchContext($id: String!) {
 
 ```graphql
 mutation CreateDocument($issueId: String!, $title: String!, $content: String!) {
-  documentCreate(input: {issueId: $issueId, title: $title, content: $content}) {
+  documentCreate(
+    input: { issueId: $issueId, title: $title, content: $content }
+  ) {
     success
     document {
       id
@@ -91,7 +93,7 @@ mutation CreateDocument($issueId: String!, $title: String!, $content: String!) {
 
 ```graphql
 mutation UpdateDocument($id: String!, $content: String!, $title: String) {
-  documentUpdate(id: $id, input: {title: $title, content: $content}) {
+  documentUpdate(id: $id, input: { title: $title, content: $content }) {
     success
     document {
       id
