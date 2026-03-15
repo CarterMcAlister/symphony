@@ -6,11 +6,19 @@ defmodule SymphonyElixir.Workflow do
   alias SymphonyElixir.WorkflowStore
 
   @workflow_file_name "WORKFLOW.md"
+  @research_workflow_file_name "RESEARCH_WORKFLOW.md"
 
   @spec workflow_file_path() :: Path.t()
   def workflow_file_path do
     Application.get_env(:symphony_elixir, :workflow_file_path) ||
       Path.join(File.cwd!(), @workflow_file_name)
+  end
+
+  @spec research_workflow_file_path() :: Path.t()
+  def research_workflow_file_path do
+    workflow_file_path()
+    |> Path.dirname()
+    |> Path.join(@research_workflow_file_name)
   end
 
   @spec set_workflow_file_path(Path.t()) :: :ok

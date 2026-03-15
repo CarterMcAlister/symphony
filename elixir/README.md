@@ -17,8 +17,9 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+4. Runs a research turn first when a sibling `RESEARCH_WORKFLOW.md` exists
+5. Sends the main `WORKFLOW.md` prompt to Codex for implementation
+6. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
 skills can make raw Linear GraphQL calls.
@@ -32,11 +33,13 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    [Harness engineering](https://openai.com/index/harness-engineering/).
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
+3. Copy this directory's `WORKFLOW.md` and `RESEARCH_WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
+   - `RESEARCH_WORKFLOW.md` runs before `WORKFLOW.md` when it lives next to the active workflow
+     file. Use it to capture research and PRD/spec handoff artifacts on the ticket before coding.
    - To get a project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - To track multiple Linear projects, list each slug under `tracker.project_slugs`.

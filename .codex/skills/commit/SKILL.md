@@ -70,6 +70,4 @@ Rationale:
 
 Tests:
 - <command or "not run (reason)">
-
-Co-authored-by: Codex <codex@openai.com>
 ```

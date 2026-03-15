@@ -8,8 +8,21 @@ run = "mix setup"
 
 [tasks.dev]
 description = "Build and run Symphony with the default workflow"
-depends = ["setup"]
-run = """
-mix build
-./bin/symphony ./WORKFLOW.md
-"""
+depends = ["setup", "build"]
+run = "./bin/symphony ./WORKFLOW.md"
+
+[tasks.build]
+description = "Build the Symphony escript"
+run = "mix build"
+
+[tasks.start]
+description = "Start Symphony with the local WORKFLOW.md"
+run = "./bin/symphony ./WORKFLOW.md"
+
+[tasks.test]
+description = "Run the test suite"
+run = "mix test"
+
+[tasks.start-dashboard]
+description = "Start Symphony with the observability dashboard on port 4000"
+run = "./bin/symphony ./WORKFLOW.md --port 4000"
