@@ -1,7 +1,8 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  api_key: $LINEAR_API_KEY
+  project_slug: "symphony-21bd456fe49d"
   active_states:
     - Todo
     - In Progress
@@ -19,7 +20,7 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
+    git clone --depth 1 https://github.com/CarterMcAlister/symphony .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
@@ -31,9 +32,9 @@ agent:
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   approval_policy: never
-  thread_sandbox: workspace-write
+  thread_sandbox: danger-full-access
   turn_sandbox_policy:
-    type: workspaceWrite
+    type: dangerFullAccess
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

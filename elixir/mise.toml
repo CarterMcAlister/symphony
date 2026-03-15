@@ -1,3 +1,23 @@
 [tools]
 erlang = "28"
 elixir = "1.19.5-otp-28"
+
+[tasks.setup]
+description = "Install Elixir dependencies"
+run = "mix setup"
+
+[tasks.build]
+description = "Build the Symphony escript"
+run = "mix build"
+
+[tasks.start]
+description = "Start Symphony with the local WORKFLOW.md"
+run = "./bin/symphony ./WORKFLOW.md"
+
+[tasks.test]
+description = "Run the test suite"
+run = "mix test"
+
+[tasks.start-dashboard]
+description = "Start Symphony with the observability dashboard on port 4000"
+run = "./bin/symphony ./WORKFLOW.md --port 4000"
