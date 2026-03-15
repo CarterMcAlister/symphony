@@ -105,7 +105,7 @@ defmodule SymphonyElixir.CoreTest do
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/CarterMcAlister/symphony ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -1481,6 +1481,143 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) == "Implementation handoff for MT-782"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner promotes todo issues after the research workflow completes" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-research-todo-post-transition-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_tracker_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-research"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-research"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-implement"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        System.delete_env("SYMP_TEST_CODEx_TRACE")
+        restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Implementation handoff for {{ issue.identifier }} state={{ issue.state }}",
+        max_turns: 2
+      )
+
+      File.write!(
+        Workflow.research_workflow_file_path(),
+        "Research packet for {{ issue.identifier }} state={{ issue.state }}\n"
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:research_todo_fetch_count, 0) + 1
+        Process.put(:research_todo_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        state =
+          case attempt do
+            1 -> "In Progress"
+            _ -> "Done"
+          end
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-research-todo",
+             identifier: "MT-783",
+             title: "Promote todo after research",
+             description: "Research handoff flow",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-research-todo",
+        identifier: "MT-783",
+        title: "Promote todo after research",
+        description: "Research handoff flow",
+        state: "Todo",
+        url: "https://example.org/issues/MT-783",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:memory_tracker_state_update, "issue-research-todo", "In Progress"}
+      assert_receive {:issue_state_fetch, 1}
+      assert_receive {:issue_state_fetch, 2}
+
+      turn_texts =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert Enum.at(turn_texts, 0) == "Research packet for MT-783 state=Todo"
+      assert Enum.at(turn_texts, 1) == "Implementation handoff for MT-783 state=In Progress"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
       File.rm_rf(test_root)
     end
   end
