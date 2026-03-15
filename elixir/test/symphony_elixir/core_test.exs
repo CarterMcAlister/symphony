@@ -16,6 +16,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.task_label == nil
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -105,7 +106,10 @@ defmodule SymphonyElixir.CoreTest do
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/CarterMcAlister/symphony ."
+
+    assert Map.get(hooks, "after_create") =~
+             ~r/git clone --depth 1 https:\/\/github\.com\/[^\/]+\/symphony \./
+
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -147,6 +151,18 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "tracker task label trims whitespace and disables blank values" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_task_label: "  backend  ")
+
+    assert Config.settings!().tracker.task_label == "backend"
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_task_label: "   ")
+
+    assert Config.settings!().tracker.task_label == nil
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -543,15 +559,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {state, %{attempt: 1, due_at_ms: due_at_ms}, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_retry_scheduled_between(due_at_ms, 1_000, before_send_ms, observed_ms)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -584,14 +601,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {_, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             retry_entry
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_retry_scheduled_between(due_at_ms, 40_000, before_send_ms, observed_ms)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -623,14 +642,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {_, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             retry_entry
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_retry_scheduled_between(due_at_ms, 10_000, before_send_ms, observed_ms)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -750,11 +771,35 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+  defp assert_retry_scheduled_between(
+         due_at_ms,
+         expected_delay_ms,
+         earliest_schedule_ms,
+         latest_observed_ms
+       ) do
+    scheduled_at_ms = due_at_ms - expected_delay_ms
+    assert scheduled_at_ms >= earliest_schedule_ms
+    assert scheduled_at_ms <= latest_observed_ms
+  end
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+  defp wait_for_retry_entry(pid, issue_id, deadline_ms)
+       when is_pid(pid) and is_binary(issue_id) and is_integer(deadline_ms) do
+    state = :sys.get_state(pid)
+
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        now_ms = System.monotonic_time(:millisecond)
+
+        if now_ms >= deadline_ms do
+          flunk("retry entry for #{issue_id} did not appear before timeout")
+        else
+          Process.sleep(10)
+          wait_for_retry_entry(pid, issue_id, deadline_ms)
+        end
+
+      retry_entry ->
+        {state, retry_entry, System.monotonic_time(:millisecond)}
+    end
   end
 
   defp settle_orchestrator_for_stateful_test(pid) when is_pid(pid) do

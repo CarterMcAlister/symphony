@@ -3,6 +3,7 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: "symphony-21bd456fe49d"
+  # task_label: "backend"
   active_states:
     - Todo
     - In Progress
