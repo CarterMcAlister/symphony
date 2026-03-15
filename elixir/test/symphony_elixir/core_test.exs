@@ -778,7 +778,6 @@ defmodule SymphonyElixir.CoreTest do
          latest_observed_ms
        ) do
     scheduled_at_ms = due_at_ms - expected_delay_ms
-
     assert scheduled_at_ms >= earliest_schedule_ms
     assert scheduled_at_ms <= latest_observed_ms
   end
