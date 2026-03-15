@@ -16,6 +16,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   """
 
   @default_repo "openai/symphony"
+  @github_repo_env "SYMPHONY_GITHUB_REPO"
 
   @impl Mix.Task
   def run(args) do
@@ -33,13 +34,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         Mix.raise("Invalid option(s): #{inspect(invalid)}")
 
       true ->
-        repo = opts[:repo] || @default_repo
+        repo = resolve_repo(opts)
         branch = opts[:branch] || current_branch()
 
         maybe_close_open_pull_requests(repo, branch)
     end
   end
 
+  defp maybe_close_open_pull_requests(repo, _branch) when repo in [nil, ""], do: :ok
   defp maybe_close_open_pull_requests(_repo, nil), do: :ok
 
   defp maybe_close_open_pull_requests(repo, branch) do
@@ -108,6 +110,27 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   defp closing_comment(branch) do
     "Closing because the Linear issue for branch #{branch} entered a terminal state without merge."
   end
+
+  defp resolve_repo(opts) do
+    env_repo = normalize_repo(System.get_env(@github_repo_env))
+
+    case Keyword.fetch(opts, :repo) do
+      {:ok, explicit_repo} ->
+        normalize_repo(explicit_repo) || env_repo
+
+      :error ->
+        env_repo || @default_repo
+    end
+  end
+
+  defp normalize_repo(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      repo -> repo
+    end
+  end
+
+  defp normalize_repo(_value), do: nil
 
   defp format_output(""), do: ""
   defp format_output(output), do: " output=#{inspect(output)}"

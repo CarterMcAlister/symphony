@@ -352,6 +352,13 @@ Fields:
 - `project_slugs` (list of strings)
   - Required for dispatch when `tracker.kind == "linear"`.
   - A legacy single `project_slug` string may be accepted as shorthand for a one-item list.
+- `projects` (list of objects)
+  - Optional canonical multi-project config when different Linear slugs map to different repos.
+  - Each entry should include:
+    - `slug` (string, required)
+    - `clone_url` (string, required)
+    - `github_repo` (string, optional)
+  - When present, implementations may derive `project_slugs` from these entries.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -556,6 +563,8 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
 - `tracker.project_slugs`: list of strings, required when `tracker.kind=linear`
+- `tracker.projects` (extension): list of `{slug, clone_url, github_repo?}` mappings; when present,
+  implementations may derive `tracker.project_slugs` from it
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -870,6 +879,9 @@ Execution contract:
   conforming default.
 - Hook timeout uses `hooks.timeout_ms`; default: `60000 ms`.
 - Log hook start, failures, and timeouts.
+- Implementations may expose issue/project-specific environment variables to hooks. For Linear
+  multi-repo workflows, useful examples include `SYMPHONY_PROJECT_SLUG`, `SYMPHONY_PROJECT_NAME`,
+  `SYMPHONY_REPO_CLONE_URL`, and `SYMPHONY_GITHUB_REPO`.
 
 Failure semantics:
 
@@ -1174,6 +1186,8 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - GraphQL endpoint (default `https://api.linear.app/graphql`)
 - Auth token sent in `Authorization` header
 - `tracker.project_slugs` maps to Linear project `slugId`
+- When `tracker.projects` is present, its `slug` entries may be used as the authoritative source
+  for `tracker.project_slugs`
 - Candidate issue query filters projects using `project: { slugId: { in: $projectSlugs } }`
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
 - Pagination required for candidate issues

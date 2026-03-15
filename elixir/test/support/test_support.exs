@@ -97,6 +97,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_api_token: "token",
           tracker_project_slug: "project",
           tracker_project_slugs: nil,
+          tracker_projects: nil,
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
@@ -135,6 +136,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_project_slugs = Keyword.get(config, :tracker_project_slugs)
+    tracker_projects = Keyword.get(config, :tracker_projects)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
@@ -172,7 +174,7 @@ defmodule SymphonyElixir.TestSupport do
         "  kind: #{yaml_value(tracker_kind)}",
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
-        tracker_project_yaml(tracker_project_slugs, tracker_project_slug),
+        tracker_project_yaml(tracker_projects, tracker_project_slugs, tracker_project_slug),
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
@@ -242,11 +244,15 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp tracker_project_yaml(project_slugs, _project_slug) when is_list(project_slugs) do
+  defp tracker_project_yaml(projects, _project_slugs, _project_slug) when is_list(projects) do
+    "  projects: #{yaml_value(projects)}"
+  end
+
+  defp tracker_project_yaml(nil, project_slugs, _project_slug) when is_list(project_slugs) do
     "  project_slugs: #{yaml_value(project_slugs)}"
   end
 
-  defp tracker_project_yaml(nil, project_slug) do
+  defp tracker_project_yaml(nil, nil, project_slug) do
     "  project_slug: #{yaml_value(project_slug)}"
   end
 

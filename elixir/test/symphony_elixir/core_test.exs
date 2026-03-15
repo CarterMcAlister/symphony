@@ -110,6 +110,57 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
     assert Config.settings!().tracker.project_slug == "gamma"
     assert Config.settings!().tracker.project_slugs == ["gamma", "delta"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: ["ignored"],
+      tracker_projects: [
+        %{slug: " alpha ", clone_url: " git@github.com:alliance/alpha.git ", github_repo: " alliance/alpha "},
+        %{slug: "beta", clone_url: "https://github.com/alliance/beta.git", github_repo: ""}
+      ]
+    )
+
+    assert :ok = Config.validate!()
+
+    assert Config.settings!().tracker.project_slug == "alpha"
+    assert Config.settings!().tracker.project_slugs == ["alpha", "beta"]
+
+    assert Config.settings!().tracker.projects == [
+             %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"},
+             %{slug: "beta", clone_url: "https://github.com/alliance/beta.git", github_repo: nil}
+           ]
+
+    assert Config.tracker_project("beta") == %{
+             slug: "beta",
+             clone_url: "https://github.com/alliance/beta.git",
+             github_repo: nil
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: nil,
+      tracker_projects: [
+        %{slug: "alpha", clone_url: ""},
+        %{slug: "beta", clone_url: "git@github.com:alliance/beta.git"}
+      ]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.projects"
+    assert message =~ "clone_url"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: nil,
+      tracker_projects: [
+        %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git"},
+        %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git"}
+      ]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.projects"
+    assert message =~ "unique"
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -123,16 +174,16 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_list(Map.get(tracker, "project_slugs"))
+    assert is_list(Map.get(tracker, "projects"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 \"$SYMPHONY_REPO_CLONE_URL\" ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise run setup"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "before_remove") =~ "--repo \"$SYMPHONY_GITHUB_REPO\""
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
@@ -181,6 +232,43 @@ defmodule SymphonyElixir.CoreTest do
     assert Schema.normalize_project_slugs([" alpha ", "alpha", "", "beta"]) == ["alpha", "beta"]
     assert Schema.normalize_project_slugs(nil, " gamma ") == ["gamma"]
     assert Schema.normalize_project_slugs(nil, "   ") == []
+  end
+
+  test "tracker project helpers normalize, validate, and derive slugs" do
+    assert Schema.normalize_tracker_projects(nil) == []
+    assert Schema.normalize_tracker_projects("invalid") == []
+
+    assert Schema.normalize_tracker_projects([
+             %{"slug" => " alpha ", "clone_url" => " git@github.com:alliance/alpha.git ", "github_repo" => " "},
+             123
+           ]) == [
+             %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: nil},
+             123
+           ]
+
+    assert Schema.validate_tracker_projects(:projects, "invalid") == [projects: "is invalid"]
+
+    assert Schema.validate_tracker_projects(:projects, [123]) == [
+             projects: "must be a list of maps"
+           ]
+
+    assert Schema.tracker_project_slugs(
+             [%{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git"}],
+             ["beta"],
+             "gamma"
+           ) == ["alpha"]
+
+    assert Schema.tracker_project_slugs([], [" beta "], nil) == ["beta"]
+    assert Schema.tracker_project_slugs("invalid", nil, " gamma ") == ["gamma"]
+  end
+
+  test "mise tasks expose setup and Phoenix-backed dev entrypoints" do
+    mise_toml = File.read!(Path.join(File.cwd!(), "mise.toml"))
+
+    assert mise_toml =~ "[tasks.setup]"
+    assert mise_toml =~ ~s(run = "mix setup")
+    assert mise_toml =~ "[tasks.dev]"
+    assert mise_toml =~ ~s(run = "mix phx.server")
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do

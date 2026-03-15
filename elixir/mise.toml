@@ -7,9 +7,9 @@ description = "Install Elixir dependencies"
 run = "mix setup"
 
 [tasks.dev]
-description = "Build and run Symphony with the default workflow"
-depends = ["setup", "build"]
-run = "./bin/symphony ./WORKFLOW.md"
+description = "Run Symphony through the Phoenix dev server with the default workflow"
+depends = ["setup"]
+run = "mix phx.server"
 
 [tasks.build]
 description = "Build the Symphony escript"

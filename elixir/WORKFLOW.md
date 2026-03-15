@@ -2,8 +2,10 @@
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slugs:
-    - "symphony-21bd456fe49d"
+  projects:
+    - slug: "symphony-21bd456fe49d"
+      clone_url: "https://github.com/CarterMcAlister/symphony.git"
+      github_repo: "CarterMcAlister/symphony"
   active_states:
     - Todo
     - In Progress
@@ -21,12 +23,12 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/CarterMcAlister/symphony .
+    git clone --depth 1 "$SYMPHONY_REPO_CLONE_URL" .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise run setup
     fi
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    cd elixir && mise exec -- mix workspace.before_remove --repo "$SYMPHONY_GITHUB_REPO"
 agent:
   max_concurrent_agents: 10
   max_turns: 20

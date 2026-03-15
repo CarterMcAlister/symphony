@@ -438,7 +438,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp configured_project_slugs do
-    Config.settings!().tracker.project_slugs || []
+    Config.settings!().tracker.project_slugs
   end
 
   defp dashboard_url do

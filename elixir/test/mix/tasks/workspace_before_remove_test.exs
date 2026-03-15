@@ -254,6 +254,40 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  test "uses SYMPHONY_GITHUB_REPO when repo option is omitted" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => "alliance/alpha"}, fn ->
+        {output, _error_output} =
+          capture_task_output(fn ->
+            BeforeRemove.run(["--branch", "feature/env-repo"])
+          end)
+
+        assert output =~ "Closed PR #101 for branch feature/env-repo"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo alliance/alpha --head feature/env-repo --state open --json number --jq .[].number"
+        assert log =~ "pr close 101 --repo alliance/alpha"
+      end)
+    end)
+  end
+
+  test "blank repo option disables repo fallback when no env repo is available" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => ""}, fn ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/no-repo", "--repo", ""])
+          end)
+
+        assert output == ""
+
+        log = File.read!(log_path)
+        assert log == ""
+        refute log =~ "pr list"
+      end)
+    end)
+  end
+
   defp with_fake_gh(fun) do
     with_fake_binaries(
       %{

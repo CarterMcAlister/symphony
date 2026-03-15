@@ -41,6 +41,7 @@ defmodule SymphonyElixir.Config.Schema do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
+    alias SymphonyElixir.Config.Schema
 
     @primary_key false
 
@@ -50,6 +51,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:project_slugs, {:array, :string}, default: [])
+      field(:projects, {:array, :map}, default: [])
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -62,10 +64,21 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :project_slugs, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :project_slugs,
+          :projects,
+          :assignee,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
       |> update_change(:project_slugs, &normalize_project_slugs/1)
+      |> update_change(:projects, &Schema.normalize_tracker_projects/1)
       |> validate_change(:project_slugs, fn :project_slugs, value ->
         if is_list(value) do
           []
@@ -73,8 +86,18 @@ defmodule SymphonyElixir.Config.Schema do
           [project_slugs: "is invalid"]
         end
       end)
+      |> validate_change(:projects, &Schema.validate_tracker_projects/2)
       |> then(fn changeset ->
-        put_change(changeset, :project_slug, get_field_from_project_slugs(changeset))
+        project_slugs =
+          Schema.tracker_project_slugs(
+            get_field(changeset, :projects, []),
+            get_field(changeset, :project_slugs, []),
+            get_field(changeset, :project_slug)
+          )
+
+        changeset
+        |> put_change(:project_slugs, project_slugs)
+        |> put_change(:project_slug, get_field_from_project_slugs(project_slugs))
       end)
     end
 
@@ -127,11 +150,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> Enum.uniq()
     end
 
-    defp get_field_from_project_slugs(changeset) do
-      changeset
-      |> get_field(:project_slugs, [])
-      |> List.first()
-    end
+    defp get_field_from_project_slugs(project_slugs) when is_list(project_slugs), do: List.first(project_slugs)
   end
 
   defmodule Polling do
@@ -435,14 +454,20 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    tracker_projects = normalize_tracker_projects(settings.tracker.projects)
+
     project_slugs =
-      settings.tracker.project_slugs
-      |> normalize_project_slugs(settings.tracker.project_slug)
+      tracker_project_slugs(
+        tracker_projects,
+        settings.tracker.project_slugs,
+        settings.tracker.project_slug
+      )
 
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
+        projects: tracker_projects,
         project_slugs: project_slugs,
         project_slug: List.first(project_slugs)
     }
@@ -486,6 +511,100 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   def normalize_project_slugs(nil, _fallback_slug), do: []
+
+  @doc false
+  @spec normalize_tracker_projects(nil | [map()]) :: [map()]
+  def normalize_tracker_projects(nil), do: []
+
+  def normalize_tracker_projects(projects) when is_list(projects) do
+    Enum.map(projects, &normalize_tracker_project/1)
+  end
+
+  def normalize_tracker_projects(_projects), do: []
+
+  @doc false
+  @spec validate_tracker_projects(atom(), term()) :: keyword(String.t())
+  def validate_tracker_projects(_field, projects) when is_list(projects) do
+    invalid_shape? = Enum.any?(projects, &(not is_map(&1)))
+
+    normalized_projects =
+      projects
+      |> Enum.filter(&is_map/1)
+      |> Enum.map(&normalize_tracker_project/1)
+
+    duplicate_slugs =
+      normalized_projects
+      |> Enum.map(&Map.get(&1, :slug))
+      |> Enum.reject(&is_nil/1)
+      |> duplicate_values()
+
+    []
+    |> maybe_add_tracker_project_error(invalid_shape?, "must be a list of maps")
+    |> maybe_add_tracker_project_error(
+      Enum.any?(normalized_projects, &is_nil(Map.get(&1, :slug))),
+      "each project must include a non-empty slug"
+    )
+    |> maybe_add_tracker_project_error(
+      Enum.any?(normalized_projects, &is_nil(Map.get(&1, :clone_url))),
+      "each project must include a non-empty clone_url"
+    )
+    |> maybe_add_tracker_project_error(
+      duplicate_slugs != [],
+      "project slugs must be unique: #{Enum.join(duplicate_slugs, ", ")}"
+    )
+  end
+
+  def validate_tracker_projects(_field, _projects), do: [projects: "is invalid"]
+
+  @doc false
+  @spec tracker_project_slugs([map()] | nil, [String.t()] | nil, String.t() | nil) :: [String.t()]
+  def tracker_project_slugs(projects, project_slugs, fallback_slug)
+      when is_list(projects) do
+    case project_slugs_from_tracker_projects(projects) do
+      [] -> normalize_project_slugs(project_slugs, fallback_slug)
+      normalized -> normalized
+    end
+  end
+
+  def tracker_project_slugs(_projects, project_slugs, fallback_slug),
+    do: normalize_project_slugs(project_slugs, fallback_slug)
+
+  defp project_slugs_from_tracker_projects(projects) when is_list(projects) do
+    projects
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&Map.get(&1, :slug))
+    |> normalize_project_slugs()
+  end
+
+  defp normalize_tracker_project(project) when is_map(project) do
+    %{
+      slug: normalize_tracker_project_value(project[:slug] || project["slug"]),
+      clone_url: normalize_tracker_project_value(project[:clone_url] || project["clone_url"]),
+      github_repo: normalize_tracker_project_value(project[:github_repo] || project["github_repo"])
+    }
+  end
+
+  defp normalize_tracker_project(project), do: project
+
+  defp normalize_tracker_project_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_tracker_project_value(_value), do: nil
+
+  defp maybe_add_tracker_project_error(errors, false, _message), do: errors
+  defp maybe_add_tracker_project_error(errors, true, message), do: errors ++ [projects: message]
+
+  defp duplicate_values(values) when is_list(values) do
+    values
+    |> Enum.frequencies()
+    |> Enum.filter(fn {_value, count} -> count > 1 end)
+    |> Enum.map(fn {value, _count} -> value end)
+    |> Enum.sort()
+  end
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

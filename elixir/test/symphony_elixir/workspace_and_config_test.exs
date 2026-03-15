@@ -40,6 +40,52 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace bootstrap can resolve different repos per project via hook env" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-project-repos-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      alpha_repo = Path.join(test_root, "alpha")
+      beta_repo = Path.join(test_root, "beta")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      Enum.each([{alpha_repo, "alpha repo\n"}, {beta_repo, "beta repo\n"}], fn {repo_path, readme} ->
+        File.mkdir_p!(repo_path)
+        File.write!(Path.join(repo_path, "README.md"), readme)
+        System.cmd("git", ["-C", repo_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", repo_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", repo_path, "config", "user.email", "test@example.com"])
+        System.cmd("git", ["-C", repo_path, "add", "README.md"])
+        System.cmd("git", ["-C", repo_path, "commit", "-m", "initial"])
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: alpha_repo, github_repo: "alliance/alpha"},
+          %{slug: "beta", clone_url: beta_repo, github_repo: "alliance/beta"}
+        ],
+        hook_after_create: "git clone \"$SYMPHONY_REPO_CLONE_URL\" ."
+      )
+
+      alpha_issue = %Issue{identifier: "MT-ALPHA", project_slug: "alpha", project_name: "Alpha"}
+      beta_issue = %Issue{identifier: "MT-BETA", project_slug: "beta", project_name: "Beta"}
+
+      assert {:ok, alpha_workspace} = Workspace.create_for_issue(alpha_issue)
+      assert {:ok, beta_workspace} = Workspace.create_for_issue(beta_issue)
+
+      assert File.read!(Path.join(alpha_workspace, "README.md")) == "alpha repo\n"
+      assert File.read!(Path.join(beta_workspace, "README.md")) == "beta repo\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -1321,24 +1367,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"}
+        ],
         worker_ssh_hosts: ["worker-01:2200"],
         hook_before_run: "echo before-run",
         hook_after_run: "echo after-run",
         hook_before_remove: "echo before-remove"
       )
 
+      issue = %Issue{identifier: "MT-SSH-WS", project_slug: "alpha", project_name: "Alpha"}
+
       assert Config.settings!().worker.ssh_hosts == ["worker-01:2200"]
       assert Config.settings!().workspace.root == workspace_root
-      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.remove_issue_workspaces("MT-SSH-WS", "worker-01:2200")
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01:2200")
+      assert :ok = Workspace.run_before_run_hook(workspace_path, issue, "worker-01:2200")
+      assert :ok = Workspace.run_after_run_hook(workspace_path, issue, "worker-01:2200")
+      assert :ok = Workspace.remove_issue_workspaces(issue, "worker-01:2200")
 
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
       assert trace =~ "__SYMPHONY_WORKSPACE__"
       assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
       assert trace =~ "${workspace#~/}"
+      assert trace =~ "export SYMPHONY_PROJECT_SLUG='\"'\"'alpha'\"'\"'"
+      assert trace =~ "export SYMPHONY_PROJECT_NAME='\"'\"'Alpha'\"'\"'"
+      assert trace =~ "export SYMPHONY_REPO_CLONE_URL='\"'\"'git@github.com:alliance/alpha.git'\"'\"'"
+      assert trace =~ "export SYMPHONY_GITHUB_REPO='\"'\"'alliance/alpha'\"'\"'"
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"

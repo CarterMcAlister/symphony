@@ -43,6 +43,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - To get a project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - To track multiple Linear projects, list each slug under `tracker.project_slugs`.
+   - When different project slugs map to different repos, prefer `tracker.projects`; Symphony
+     derives `tracker.project_slugs` from those entries automatically.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
@@ -92,13 +94,15 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slugs:
-    - "..."
+  projects:
+    - slug: "..."
+      clone_url: "git@github.com:your-org/project-a.git"
+      github_repo: "your-org/project-a"
 workspace:
   root: ~/code/workspaces
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    git clone "$SYMPHONY_REPO_CLONE_URL" .
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -127,12 +131,19 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- `tracker.projects` is the canonical way to map multiple Linear project slugs to different repos.
+  Each entry should include `slug`, `clone_url`, and optionally `github_repo`.
+- Legacy `tracker.project_slug` and `tracker.project_slugs` remain supported for workflows where
+  one global hook/bootstrap setup applies to every issue.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- Symphony exports `SYMPHONY_PROJECT_SLUG`, `SYMPHONY_PROJECT_NAME`, `SYMPHONY_REPO_CLONE_URL`,
+  and `SYMPHONY_GITHUB_REPO` into hook environments so hooks can react to the current issue's
+  configured project mapping.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- This repo defines `mise run setup` for dependency bootstrap and `mise run dev` for the default
-  local Symphony entrypoint.
+- This repo defines `mise run setup` for dependency bootstrap, `mise run dev` for the default
+  Phoenix dev-server entrypoint, and `mise run start` for the escript entrypoint.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,

@@ -26,6 +26,12 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @type tracker_project :: %{
+          slug: String.t(),
+          clone_url: String.t(),
+          github_repo: String.t() | nil
+        }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -47,6 +53,22 @@ defmodule SymphonyElixir.Config do
         raise ArgumentError, message: format_config_error(reason)
     end
   end
+
+  @spec tracker_project(String.t() | nil) :: tracker_project() | nil
+  def tracker_project(project_slug) when is_binary(project_slug) do
+    normalized_slug = String.trim(project_slug)
+
+    case normalized_slug do
+      "" ->
+        nil
+
+      slug ->
+        settings!().tracker.projects
+        |> Enum.find(&(Map.get(&1, :slug) == slug))
+    end
+  end
+
+  def tracker_project(_project_slug), do: nil
 
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
