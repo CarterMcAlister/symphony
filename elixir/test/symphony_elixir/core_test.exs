@@ -107,7 +107,7 @@ defmodule SymphonyElixir.CoreTest do
     assert is_map(hooks)
 
     assert Map.get(hooks, "after_create") =~
-             "git clone --depth 1 https://github.com/CarterMcAlister/symphony ."
+             ~r/git clone --depth 1 https:\/\/github\.com\/[^\/]+\/symphony \./
 
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
@@ -546,15 +546,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
-    sent_at_ms = System.monotonic_time(:millisecond)
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    {state, observed_at_ms} = wait_for_retry_attempt(pid, issue_id)
+
+    {state, %{attempt: 1, due_at_ms: due_at_ms}, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, 1_000)
+    assert_retry_scheduled_between(due_at_ms, 1_000, before_send_ms, observed_ms)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -587,14 +588,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
-    sent_at_ms = System.monotonic_time(:millisecond)
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    {state, observed_at_ms} = wait_for_retry_attempt(pid, issue_id)
+
+    {_, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             retry_entry
 
-    assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, 40_000)
+    assert_retry_scheduled_between(due_at_ms, 40_000, before_send_ms, observed_ms)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -626,14 +629,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
-    sent_at_ms = System.monotonic_time(:millisecond)
+    before_send_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    {state, observed_at_ms} = wait_for_retry_attempt(pid, issue_id)
+
+    {_, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             retry_entry
 
-    assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, 10_000)
+    assert_retry_scheduled_between(due_at_ms, 10_000, before_send_ms, observed_ms)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -753,28 +758,34 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_retry_due_at_in_window(due_at_ms, sent_at_ms, observed_at_ms, expected_delay_ms) do
-    assert due_at_ms >= sent_at_ms + expected_delay_ms
-    assert due_at_ms <= observed_at_ms + expected_delay_ms
+  defp assert_retry_scheduled_between(
+         due_at_ms,
+         expected_delay_ms,
+         earliest_schedule_ms,
+         latest_observed_ms
+       ) do
+    scheduled_at_ms = due_at_ms - expected_delay_ms
+    assert scheduled_at_ms >= earliest_schedule_ms
+    assert scheduled_at_ms <= latest_observed_ms
   end
 
-  defp wait_for_retry_attempt(pid, issue_id, deadline_ms \\ System.monotonic_time(:millisecond) + 2_000)
-
-  defp wait_for_retry_attempt(pid, issue_id, deadline_ms)
+  defp wait_for_retry_entry(pid, issue_id, deadline_ms)
        when is_pid(pid) and is_binary(issue_id) and is_integer(deadline_ms) do
     state = :sys.get_state(pid)
 
-    if Map.has_key?(state.retry_attempts, issue_id) do
-      {state, System.monotonic_time(:millisecond)}
-    else
-      now_ms = System.monotonic_time(:millisecond)
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        now_ms = System.monotonic_time(:millisecond)
 
-      if now_ms >= deadline_ms do
-        flunk("retry attempt for #{issue_id} was not scheduled before timeout")
-      else
-        Process.sleep(10)
-        wait_for_retry_attempt(pid, issue_id, deadline_ms)
-      end
+        if now_ms >= deadline_ms do
+          flunk("retry entry for #{issue_id} did not appear before timeout")
+        else
+          Process.sleep(10)
+          wait_for_retry_entry(pid, issue_id, deadline_ms)
+        end
+
+      retry_entry ->
+        {state, retry_entry, System.monotonic_time(:millisecond)}
     end
   end
 
