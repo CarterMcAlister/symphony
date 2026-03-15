@@ -10,7 +10,7 @@ defmodule SymphonyElixir.PromptBuilder do
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
     template =
-      Workflow.current()
+      workflow_source(opts)
       |> prompt_template!()
       |> parse_template!()
 
@@ -23,6 +23,16 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+  end
+
+  defp workflow_source(opts) when is_list(opts) do
+    case Keyword.get(opts, :workflow_path) do
+      path when is_binary(path) ->
+        Workflow.load(path)
+
+      _ ->
+        Workflow.current()
+    end
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)

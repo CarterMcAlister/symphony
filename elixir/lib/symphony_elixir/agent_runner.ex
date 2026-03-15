@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workflow, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -98,10 +98,65 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        case maybe_run_research_turn(session, issue, codex_update_recipient, opts, issue_state_fetcher) do
+          {:ok, refreshed_issue} ->
+            do_run_codex_turns(
+              session,
+              workspace,
+              refreshed_issue,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              1,
+              max_turns
+            )
+
+          :done ->
+            :ok
+
+          {:error, reason} ->
+            {:error, reason}
+        end
       after
         AppServer.stop_session(session)
       end
+    end
+  end
+
+  defp maybe_run_research_turn(app_session, issue, codex_update_recipient, opts, issue_state_fetcher) do
+    research_workflow_path = Workflow.research_workflow_file_path()
+
+    if File.regular?(research_workflow_path) do
+      prompt = PromptBuilder.build_prompt(issue, Keyword.put(opts, :workflow_path, research_workflow_path))
+
+      Logger.info("Running research workflow for #{issue_context(issue)} workflow=#{research_workflow_path}")
+
+      with {:ok, turn_session} <-
+             AppServer.run_turn(
+               app_session,
+               prompt,
+               issue,
+               on_message: codex_message_handler(codex_update_recipient, issue)
+             ) do
+        Logger.info("Completed research workflow for #{issue_context(issue)} session_id=#{turn_session[:session_id]}")
+        research_turn_outcome(issue, issue_state_fetcher)
+      end
+    else
+      Logger.info("Skipping research workflow for #{issue_context(issue)} missing_path=#{research_workflow_path}")
+      {:ok, issue}
+    end
+  end
+
+  defp research_turn_outcome(issue, issue_state_fetcher) do
+    case continue_with_issue?(issue, issue_state_fetcher) do
+      {:continue, refreshed_issue} ->
+        {:ok, refreshed_issue}
+
+      {:done, _refreshed_issue} ->
+        :done
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
