@@ -5,8 +5,7 @@ defmodule SymphonyElixir.CLI do
 
   alias SymphonyElixir.LogFile
 
-  @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer]
+  @switches [logs_root: :string, port: :integer]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
@@ -33,15 +32,13 @@ defmodule SymphonyElixir.CLI do
   def evaluate(args, deps \\ runtime_deps()) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
+        with :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
           run(Path.expand("WORKFLOW.md"), deps)
         end
 
       {opts, [workflow_path], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
+        with :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
           run(workflow_path, deps)
         end
@@ -60,6 +57,7 @@ defmodule SymphonyElixir.CLI do
 
       case deps.ensure_all_started.() do
         {:ok, _started_apps} ->
+          IO.puts(welcome_banner())
           :ok
 
         {:error, reason} ->
@@ -102,21 +100,18 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
-  defp require_guardrails_acknowledgement(opts) do
-    if Keyword.get(opts, @acknowledgement_switch, false) do
-      :ok
-    else
-      {:error, acknowledgement_banner()}
-    end
-  end
-
-  @spec acknowledgement_banner() :: String.t()
-  defp acknowledgement_banner do
+  @spec welcome_banner() :: String.t()
+  defp welcome_banner do
     lines = [
-      "This Symphony implementation is a low key engineering preview.",
-      "Codex will run without any guardrails.",
-      "SymphonyElixir is not a supported product and is presented as-is.",
-      "To proceed, start with `--i-understand-that-this-will-be-running-without-the-usual-guardrails` CLI argument"
+      "   _____                              __",
+      "  / ___/__  ______ ___  ____  ____  / /_  __  __",
+      "  \\__ \\/ / / / __ `__ \\/ __ \\/ __ \\/ __ \\/ / / /",
+      " ___/ / /_/ / / / / / / /_/ / / / / / / / /_/ / ",
+      "/____/\\__, /_/ /_/ /_/ .___/_/ /_/_/ /_/\\__, /  ",
+      "     /____/          /_/               /____/   ",
+      "",
+      "Welcome to Symphony.",
+      "Workflow loaded. The orchestra is warm."
     ]
 
     width = Enum.max(Enum.map(lines, &String.length/1))
@@ -135,7 +130,7 @@ defmodule SymphonyElixir.CLI do
       ] ++ [spacer, bottom]
 
     [
-      IO.ANSI.red(),
+      IO.ANSI.cyan(),
       IO.ANSI.bright(),
       Enum.join(content, "\n"),
       IO.ANSI.reset()
