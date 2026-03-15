@@ -480,6 +480,77 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert variables.stateNames == ["Todo", "In Progress"]
   end
 
+  test "linear candidate fetch applies task label filtering when configured" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:candidate_fetch, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, []} =
+             Client.fetch_candidate_issues_for_test(
+               ["project"],
+               ["Todo", "In Progress"],
+               "  Backend  ",
+               graphql_fun
+             )
+
+    assert_receive {:candidate_fetch, query,
+                    %{
+                      projectSlugs: ["project"],
+                      stateNames: ["Todo", "In Progress"],
+                      taskLabel: "Backend",
+                      first: 50,
+                      relationFirst: 50,
+                      after: nil
+                    }}
+
+    assert query =~ "SymphonyLinearPollWithTaskLabel"
+    assert query =~ "eqIgnoreCase: $taskLabel"
+  end
+
+  test "linear candidate fetch omits task label filtering when label is blank" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:candidate_fetch, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, []} =
+             Client.fetch_candidate_issues_for_test("project", ["Todo"], "   ", graphql_fun)
+
+    assert_receive {:candidate_fetch, query, variables}
+
+    assert %{
+             projectSlugs: ["project"],
+             stateNames: ["Todo"],
+             first: 50,
+             relationFirst: 50,
+             after: nil
+           } = variables
+
+    refute Map.has_key?(variables, :taskLabel)
+    assert query =~ "SymphonyLinearPoll("
+    assert query =~ "slugId: {in: $projectSlugs}"
+    refute query =~ "eqIgnoreCase: $taskLabel"
+  end
+
   test "linear client paginates issue state fetches by id beyond one page" do
     issue_ids = Enum.map(1..55, &"issue-#{&1}")
     first_batch_ids = Enum.take(issue_ids, 50)
@@ -521,6 +592,77 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert query =~ "SymphonyLinearIssuesById"
 
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
+  end
+
+  test "linear issue state fetch applies task label filtering when configured" do
+    issue_ids = ["issue-1", "issue-2"]
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:fetch_issue_states_page, query, variables})
+
+      body = %{
+        "data" => %{
+          "issues" => %{
+            "nodes" =>
+              Enum.map(variables.ids, fn issue_id ->
+                %{
+                  "id" => issue_id,
+                  "identifier" => String.upcase(issue_id),
+                  "title" => "Issue #{issue_id}",
+                  "state" => %{"name" => "In Progress"},
+                  "labels" => %{"nodes" => [%{"name" => "Backend"}]},
+                  "inverseRelations" => %{"nodes" => []}
+                }
+              end)
+          }
+        }
+      }
+
+      {:ok, body}
+    end
+
+    assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(issue_ids, " backend ", graphql_fun)
+    assert Enum.map(issues, & &1.id) == issue_ids
+
+    assert_receive {:fetch_issue_states_page, query, %{ids: ^issue_ids, taskLabel: "backend", first: 2, relationFirst: 50}}
+
+    assert query =~ "SymphonyLinearIssuesByIdWithTaskLabel"
+    assert query =~ "eqIgnoreCase: $taskLabel"
+  end
+
+  test "linear issue state fetch omits task label filtering when label is blank" do
+    issue_ids = ["issue-1"]
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:fetch_issue_states_page, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "issue-1",
+                 "identifier" => "ISSUE-1",
+                 "title" => "Issue issue-1",
+                 "state" => %{"name" => "In Progress"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               }
+             ]
+           }
+         }
+       }}
+    end
+
+    assert {:ok, [%Issue{id: "issue-1"}]} =
+             Client.fetch_issue_states_by_ids_for_test(issue_ids, "   ", graphql_fun)
+
+    assert_receive {:fetch_issue_states_page, query, %{ids: ^issue_ids, first: 1, relationFirst: 50} = variables}
+
+    refute Map.has_key?(variables, :taskLabel)
+    assert query =~ "SymphonyLinearIssuesById("
+    refute query =~ "eqIgnoreCase: $taskLabel"
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do

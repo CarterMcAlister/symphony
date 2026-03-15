@@ -53,6 +53,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slugs, {:array, :string}, default: [])
       field(:projects, {:array, :map}, default: [])
       field(:assignee, :string)
+      field(:task_label, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -72,6 +73,7 @@ defmodule SymphonyElixir.Config.Schema do
           :project_slugs,
           :projects,
           :assignee,
+          :task_label,
           :active_states,
           :terminal_states
         ],
@@ -469,7 +471,8 @@ defmodule SymphonyElixir.Config.Schema do
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
         projects: tracker_projects,
         project_slugs: project_slugs,
-        project_slug: List.first(project_slugs)
+        project_slug: List.first(project_slugs),
+        task_label: normalize_optional_string(settings.tracker.task_label)
     }
 
     workspace = %{
@@ -698,6 +701,15 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp default_turn_sandbox_policy(workspace) do
     %{

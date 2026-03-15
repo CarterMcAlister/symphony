@@ -359,6 +359,16 @@ Fields:
     - `clone_url` (string, required)
     - `github_repo` (string, optional)
   - When present, implementations may derive `project_slugs` from these entries.
+- `assignee` (string)
+  - Optional worker-routing filter for `tracker.kind == "linear"`.
+  - May be a literal assignee id, `"me"`, or `$VAR_NAME`.
+  - Canonical environment variable: `LINEAR_ASSIGNEE`.
+- `task_label` (string)
+  - Optional issue-label filter for `tracker.kind == "linear"`.
+  - When set, candidate issue polling and issue-state refresh only return issues with a matching
+    label name.
+  - Matching is case-insensitive.
+  - Blank values are treated as unset.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -563,8 +573,11 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
 - `tracker.project_slugs`: list of strings, required when `tracker.kind=linear`
+- `tracker.project_slug`: legacy string shorthand accepted for one-item `tracker.project_slugs`
 - `tracker.projects` (extension): list of `{slug, clone_url, github_repo?}` mappings; when present,
   implementations may derive `tracker.project_slugs` from it
+- `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE`
+- `tracker.task_label`: optional string, case-insensitive Linear label filter, blank treated as unset
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -1189,6 +1202,10 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - When `tracker.projects` is present, its `slug` entries may be used as the authoritative source
   for `tracker.project_slugs`
 - Candidate issue query filters projects using `project: { slugId: { in: $projectSlugs } }`
+- When `tracker.task_label` is set, candidate issue and issue-state refresh queries additionally
+  filter using `labels: { some: { name: { eqIgnoreCase: $taskLabel } } }`
+- When `tracker.assignee` is set, assignee routing remains a client-side normalization step after
+  the query response is read
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
 - Pagination required for candidate issues
 - Page size default: `50`

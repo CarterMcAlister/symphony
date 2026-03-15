@@ -148,17 +148,38 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp research_turn_outcome(issue, issue_state_fetcher) do
-    case continue_with_issue?(issue, issue_state_fetcher) do
-      {:continue, refreshed_issue} ->
-        {:ok, refreshed_issue}
+    case normalize_issue_state(issue.state) do
+      "todo" ->
+        transition_todo_issue_after_research(issue, issue_state_fetcher)
 
-      {:done, _refreshed_issue} ->
-        :done
+      _ ->
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} ->
+            {:ok, refreshed_issue}
 
-      {:error, reason} ->
-        {:error, reason}
+          {:done, _refreshed_issue} ->
+            :done
+
+          {:error, reason} ->
+            {:error, reason}
+        end
     end
   end
+
+  defp transition_todo_issue_after_research(%Issue{id: issue_id} = issue, issue_state_fetcher)
+       when is_binary(issue_id) do
+    Logger.info("Promoting todo issue after research workflow for #{issue_context(issue)}")
+
+    with :ok <- Tracker.update_issue_state(issue_id, "In Progress"),
+         {:ok, refreshed_issue} <- refresh_issue_state(%{issue | state: "In Progress"}, issue_state_fetcher) do
+      {:ok, refreshed_issue}
+    else
+      {:error, reason} ->
+        {:error, {:todo_issue_transition_failed, reason}}
+    end
+  end
+
+  defp transition_todo_issue_after_research(issue, _issue_state_fetcher), do: {:ok, issue}
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
@@ -216,16 +237,13 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
-    case issue_state_fetcher.([issue_id]) do
-      {:ok, [%Issue{} = refreshed_issue | _]} ->
+    case refresh_issue_state(issue, issue_state_fetcher) do
+      {:ok, refreshed_issue} ->
         if active_issue_state?(refreshed_issue.state) do
           {:continue, refreshed_issue}
         else
           {:done, refreshed_issue}
         end
-
-      {:ok, []} ->
-        {:done, issue}
 
       {:error, reason} ->
         {:error, {:issue_state_refresh_failed, reason}}
@@ -233,6 +251,21 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp refresh_issue_state(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+    case issue_state_fetcher.([issue_id]) do
+      {:ok, [%Issue{} = refreshed_issue | _]} ->
+        {:ok, refreshed_issue}
+
+      {:ok, []} ->
+        {:ok, issue}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp refresh_issue_state(issue, _issue_state_fetcher), do: {:ok, issue}
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
