@@ -941,15 +941,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
-    triggered_at_ms = System.monotonic_time(:millisecond)
+    before_tick_ms = System.monotonic_time(:millisecond)
     send(pid, :tick)
 
-    state =
-      wait_for_orchestrator_state(pid, fn current_state ->
-        not Process.alive?(worker_pid) and
-          not Map.has_key?(current_state.running, issue_id) and
-          match?(%{^issue_id => %{attempt: 1}}, current_state.retry_attempts)
-      end)
+    {state, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -959,12 +955,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
              error: "stalled for " <> _
-           } = state.retry_attempts[issue_id]
+           } = retry_entry
 
     assert is_integer(due_at_ms)
-    scheduled_delay_ms = due_at_ms - triggered_at_ms
-    assert scheduled_delay_ms >= 10_000
-    assert scheduled_delay_ms <= 10_500
+    assert_retry_scheduled_between(due_at_ms, 10_000, before_tick_ms, observed_ms)
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -1563,11 +1557,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     do_wait_for_snapshot(pid, predicate, deadline_ms)
   end
 
-  defp wait_for_orchestrator_state(pid, predicate, timeout_ms \\ 500) when is_function(predicate, 1) do
-    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
-  end
-
   defp settle_orchestrator_for_stateful_test(pid) when is_pid(pid) do
     state = wait_for_orchestrator_idle(pid, System.monotonic_time(:millisecond) + 2_000)
 
@@ -1605,21 +1594,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
-  defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
-    state = :sys.get_state(pid)
-
-    if predicate.(state) do
-      state
-    else
-      if System.monotonic_time(:millisecond) >= deadline_ms do
-        flunk("timed out waiting for orchestrator state: #{inspect(state)}")
-      else
-        Process.sleep(5)
-        do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
-      end
-    end
-  end
-
   defp do_wait_for_snapshot(pid, predicate, deadline_ms) do
     snapshot = GenServer.call(pid, :snapshot)
 
@@ -1632,6 +1606,37 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         Process.sleep(5)
         do_wait_for_snapshot(pid, predicate, deadline_ms)
       end
+    end
+  end
+
+  defp assert_retry_scheduled_between(
+         due_at_ms,
+         expected_delay_ms,
+         earliest_schedule_ms,
+         latest_observed_ms
+       ) do
+    scheduled_at_ms = due_at_ms - expected_delay_ms
+    assert scheduled_at_ms >= earliest_schedule_ms
+    assert scheduled_at_ms <= latest_observed_ms
+  end
+
+  defp wait_for_retry_entry(pid, issue_id, deadline_ms)
+       when is_pid(pid) and is_binary(issue_id) and is_integer(deadline_ms) do
+    state = :sys.get_state(pid)
+
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        now_ms = System.monotonic_time(:millisecond)
+
+        if now_ms >= deadline_ms do
+          flunk("retry entry for #{issue_id} did not appear before timeout")
+        else
+          Process.sleep(10)
+          wait_for_retry_entry(pid, issue_id, deadline_ms)
+        end
+
+      retry_entry ->
+        {state, retry_entry, System.monotonic_time(:millisecond)}
     end
   end
 
