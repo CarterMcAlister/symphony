@@ -1234,6 +1234,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "fetch the current unresolved non-agent Linear issue comments via `linear_graphql`"
+    assert prompt =~ "If fresh actionable Human Review feedback exists but there is no attached open PR"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end
@@ -1553,6 +1555,7 @@ defmodule SymphonyElixir.CoreTest do
       refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
+      assert Enum.at(turn_texts, 1) =~ "re-fetch current unresolved non-agent Linear issue comments"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
