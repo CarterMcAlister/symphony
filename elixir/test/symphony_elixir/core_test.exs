@@ -1236,6 +1236,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "fetch the current unresolved non-agent Linear issue comments via `linear_graphql`"
     assert prompt =~ "If fresh actionable Human Review feedback exists but there is no attached open PR"
+    assert prompt =~ "## Research Started"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end

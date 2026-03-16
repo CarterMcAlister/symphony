@@ -53,7 +53,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - Keep `Human Review` in `tracker.active_states` so the orchestrator revisits those tickets
      during polling.
    - Agent-managed issue comments should stay marker-prefixed (`## Codex Workpad`,
-     `## Open Questions`) so the workflow can ignore them when collecting human steering input.
+     `## Open Questions`, `## Research Started`) so the workflow can ignore them
+     when collecting human steering input.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites

@@ -160,7 +160,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If the documents are missing, proceed with direct issue investigation and record that fact in the workpad `Notes`.
 3.  Before new planning, fetch the current unresolved non-agent Linear issue comments via `linear_graphql`.
     - Include threaded replies as well as top-level comments.
-    - Ignore comments starting with `## Codex Workpad` or `## Open Questions`.
+    - Ignore comments starting with `## Codex Workpad`, `## Open Questions`, or `## Research Started`.
     - Mirror any actionable comment requirements into the workpad plan/notes before coding.
 4.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
 5.  Immediately reconcile the workpad before new edits:
@@ -271,6 +271,7 @@ Use this only when completion is blocked by missing required tools or missing au
 3. Ignore agent-managed issue comments when looking for Human Review steering:
    - comments starting with `## Codex Workpad`
    - comments starting with `## Open Questions`
+   - comments starting with `## Research Started`
 4. If fresh actionable Human Review feedback exists but there is no attached open PR:
    - update the existing `## Codex Workpad` with a concise blocker brief,
    - treat the issue as blocked,
