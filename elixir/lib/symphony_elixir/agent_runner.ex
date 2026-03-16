@@ -8,6 +8,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workflow, Workspace}
 
   @type worker_host :: String.t() | nil
+  @research_started_comment "## Research Started\n\nSymphony has started the research phase for this ticket."
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
@@ -130,6 +131,7 @@ defmodule SymphonyElixir.AgentRunner do
       prompt = PromptBuilder.build_prompt(issue, Keyword.put(opts, :workflow_path, research_workflow_path))
 
       Logger.info("Running research workflow for #{issue_context(issue)} workflow=#{research_workflow_path}")
+      :ok = maybe_create_research_started_comment(issue)
 
       with {:ok, turn_session} <-
              AppServer.run_turn(
@@ -146,6 +148,21 @@ defmodule SymphonyElixir.AgentRunner do
       {:ok, issue}
     end
   end
+
+  defp maybe_create_research_started_comment(%Issue{id: issue_id} = issue) when is_binary(issue_id) do
+    case Tracker.create_comment(issue_id, research_started_comment()) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to create research-start comment for #{issue_context(issue)} reason=#{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp maybe_create_research_started_comment(_issue), do: :ok
+
+  defp research_started_comment, do: @research_started_comment
 
   defp research_turn_outcome(issue, issue_state_fetcher) do
     case normalize_issue_state(issue.state) do

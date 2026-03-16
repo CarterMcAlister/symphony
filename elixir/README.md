@@ -17,7 +17,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
-4. Runs a research turn first when a sibling `RESEARCH_WORKFLOW.md` exists
+4. Posts a `## Research Started` issue comment and runs a research turn first when a sibling `RESEARCH_WORKFLOW.md` exists
 5. Sends the main `WORKFLOW.md` prompt to Codex for implementation
 6. Keeps Codex working on the issue until the work is done
 
