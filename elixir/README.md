@@ -135,6 +135,9 @@ Notes:
   identifier, title, and body.
 - `tracker.projects` is the canonical way to map multiple Linear project slugs to different repos.
   Each entry should include `slug`, `clone_url`, and optionally `github_repo`.
+- If an issue arrives with a `project_slug` that is not present in `tracker.projects`, Symphony
+  now fails workspace bootstrap early and skips repo-dependent cleanup hooks instead of falling
+  back to blank repo env vars or a hardcoded repo.
 - Legacy `tracker.project_slug` and `tracker.project_slugs` remain supported for workflows where
   one global hook/bootstrap setup applies to every issue.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

@@ -576,6 +576,9 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `tracker.project_slug`: legacy string shorthand accepted for one-item `tracker.project_slugs`
 - `tracker.projects` (extension): list of `{slug, clone_url, github_repo?}` mappings; when present,
   implementations may derive `tracker.project_slugs` from it
+  - If a tracked issue `project_slug` is not present in `tracker.projects`, implementations should
+    raise a visible preflight error before repo bootstrap and skip repo-dependent cleanup side
+    effects instead of guessing a fallback repo.
 - `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE`
 - `tracker.task_label`: optional string, case-insensitive Linear label filter, blank treated as unset
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
@@ -1237,6 +1240,7 @@ Recommended error categories:
 - `unsupported_tracker_kind`
 - `missing_tracker_api_key`
 - `missing_tracker_project_slug`
+- `missing_tracker_project`
 - `linear_api_request` (transport failures)
 - `linear_api_status` (non-200 HTTP)
 - `linear_graphql_errors`

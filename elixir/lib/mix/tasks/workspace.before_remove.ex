@@ -12,10 +12,9 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
 
       mix workspace.before_remove
       mix workspace.before_remove --branch feature/my-branch
-      mix workspace.before_remove --repo openai/symphony
+      mix workspace.before_remove --repo alliance/alpha
   """
 
-  @default_repo "openai/symphony"
   @github_repo_env "SYMPHONY_GITHUB_REPO"
 
   @impl Mix.Task
@@ -119,7 +118,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         normalize_repo(explicit_repo) || env_repo
 
       :error ->
-        env_repo || @default_repo
+        env_repo
     end
   end
 

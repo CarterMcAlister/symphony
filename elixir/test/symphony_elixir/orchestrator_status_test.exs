@@ -42,7 +42,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    initial_state = :sys.get_state(pid)
+    initial_state = settle_orchestrator_for_stateful_test(pid)
     started_at = DateTime.utc_now()
 
     running_entry = %{
@@ -941,9 +941,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
+    triggered_at_ms = System.monotonic_time(:millisecond)
     send(pid, :tick)
-    Process.sleep(100)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn current_state ->
+        not Process.alive?(worker_pid) and
+          not Map.has_key?(current_state.running, issue_id) and
+          match?(%{^issue_id => %{attempt: 1}}, current_state.retry_attempts)
+      end)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -956,9 +962,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
-    assert remaining_ms <= 10_500
+    scheduled_delay_ms = due_at_ms - triggered_at_ms
+    assert scheduled_delay_ms >= 10_000
+    assert scheduled_delay_ms <= 10_500
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -1555,6 +1561,63 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_snapshot(pid, predicate, deadline_ms)
+  end
+
+  defp wait_for_orchestrator_state(pid, predicate, timeout_ms \\ 500) when is_function(predicate, 1) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+  end
+
+  defp settle_orchestrator_for_stateful_test(pid) when is_pid(pid) do
+    state = wait_for_orchestrator_idle(pid, System.monotonic_time(:millisecond) + 2_000)
+
+    if is_reference(state.tick_timer_ref) do
+      Process.cancel_timer(state.tick_timer_ref)
+    end
+
+    :sys.replace_state(pid, fn current_state ->
+      %{
+        current_state
+        | tick_timer_ref: nil,
+          tick_token: nil,
+          next_poll_due_at_ms: nil,
+          poll_check_in_progress: false
+      }
+    end)
+
+    :sys.get_state(pid)
+  end
+
+  defp wait_for_orchestrator_idle(pid, deadline_ms) when is_pid(pid) and is_integer(deadline_ms) do
+    state = :sys.get_state(pid)
+    now_ms = System.monotonic_time(:millisecond)
+    next_poll_in_ms = if is_integer(state.next_poll_due_at_ms), do: state.next_poll_due_at_ms - now_ms, else: nil
+
+    if state.poll_check_in_progress or not (is_integer(next_poll_in_ms) and next_poll_in_ms > 1_000) do
+      if now_ms >= deadline_ms do
+        flunk("orchestrator did not settle before timeout")
+      else
+        Process.sleep(10)
+        wait_for_orchestrator_idle(pid, deadline_ms)
+      end
+    else
+      state
+    end
+  end
+
+  defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
+    state = :sys.get_state(pid)
+
+    if predicate.(state) do
+      state
+    else
+      if System.monotonic_time(:millisecond) >= deadline_ms do
+        flunk("timed out waiting for orchestrator state: #{inspect(state)}")
+      else
+        Process.sleep(5)
+        do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+      end
+    end
   end
 
   defp do_wait_for_snapshot(pid, predicate, deadline_ms) do

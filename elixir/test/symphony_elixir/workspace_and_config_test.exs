@@ -86,6 +86,39 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace create fails clearly when tracker.projects is configured but issue project slug is unmapped" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-missing-project-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"}
+        ],
+        hook_after_create: "git clone \"$SYMPHONY_REPO_CLONE_URL\" ."
+      )
+
+      issue = %Issue{identifier: "MT-MISSING-REPO", project_slug: "beta", project_name: "Beta"}
+      expected_workspace = Path.join(workspace_root, "MT-MISSING-REPO")
+
+      assert {:error, {:missing_tracker_project, "beta", "MT-MISSING-REPO"}} =
+               Workspace.create_for_issue(issue)
+
+      refute File.exists?(expected_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -950,6 +983,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-TIMEOUT")
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS-TIMEOUT")
       refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace remove skips before_remove hook when tracker project mapping is missing" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hooks-missing-project-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      before_remove_marker = Path.join(test_root, "before_remove.log")
+
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"}
+        ],
+        hook_before_remove: "echo before_remove > \"#{before_remove_marker}\""
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-MISSING-PROJECT")
+      issue = %Issue{identifier: "MT-HOOKS-MISSING-PROJECT", project_slug: "beta", project_name: "Beta"}
+
+      assert :ok = Workspace.remove_issue_workspaces(issue)
+      refute File.exists?(workspace)
+      refute File.exists?(before_remove_marker)
     after
       File.rm_rf(test_root)
     end
