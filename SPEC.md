@@ -349,8 +349,16 @@ Fields:
   - May be a literal token or `$VAR_NAME`.
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
-- `project_slug` (string)
+- `project_slugs` (list of strings)
   - Required for dispatch when `tracker.kind == "linear"`.
+  - A legacy single `project_slug` string may be accepted as shorthand for a one-item list.
+- `projects` (list of objects)
+  - Optional canonical multi-project config when different Linear slugs map to different repos.
+  - Each entry should include:
+    - `slug` (string, required)
+    - `clone_url` (string, required)
+    - `github_repo` (string, optional)
+  - When present, implementations may derive `project_slugs` from these entries.
 - `assignee` (string)
   - Optional worker-routing filter for `tracker.kind == "linear"`.
   - May be a literal assignee id, `"me"`, or `$VAR_NAME`.
@@ -554,7 +562,7 @@ Validation checks:
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
-- `tracker.project_slug` is present when required by the selected tracker kind.
+- `tracker.project_slugs` is present when required by the selected tracker kind.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Config Fields Summary (Cheat Sheet)
@@ -564,7 +572,13 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `tracker.kind`: string, required, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, required when `tracker.kind=linear`
+- `tracker.project_slugs`: list of strings, required when `tracker.kind=linear`
+- `tracker.project_slug`: legacy string shorthand accepted for one-item `tracker.project_slugs`
+- `tracker.projects` (extension): list of `{slug, clone_url, github_repo?}` mappings; when present,
+  implementations may derive `tracker.project_slugs` from it
+  - If a tracked issue `project_slug` is not present in `tracker.projects`, implementations should
+    raise a visible preflight error before repo bootstrap and skip repo-dependent cleanup side
+    effects instead of guessing a fallback repo.
 - `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE`
 - `tracker.task_label`: optional string, case-insensitive Linear label filter, blank treated as unset
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
@@ -881,6 +895,9 @@ Execution contract:
   conforming default.
 - Hook timeout uses `hooks.timeout_ms`; default: `60000 ms`.
 - Log hook start, failures, and timeouts.
+- Implementations may expose issue/project-specific environment variables to hooks. For Linear
+  multi-repo workflows, useful examples include `SYMPHONY_PROJECT_SLUG`, `SYMPHONY_PROJECT_NAME`,
+  `SYMPHONY_REPO_CLONE_URL`, and `SYMPHONY_GITHUB_REPO`.
 
 Failure semantics:
 
@@ -1184,8 +1201,10 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - `tracker.kind == "linear"`
 - GraphQL endpoint (default `https://api.linear.app/graphql`)
 - Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId`
-- Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
+- `tracker.project_slugs` maps to Linear project `slugId`
+- When `tracker.projects` is present, its `slug` entries may be used as the authoritative source
+  for `tracker.project_slugs`
+- Candidate issue query filters projects using `project: { slugId: { in: $projectSlugs } }`
 - When `tracker.task_label` is set, candidate issue and issue-state refresh queries additionally
   filter using `labels: { some: { name: { eqIgnoreCase: $taskLabel } } }`
 - When `tracker.assignee` is set, assignee routing remains a client-side normalization step after
@@ -1221,6 +1240,7 @@ Recommended error categories:
 - `unsupported_tracker_kind`
 - `missing_tracker_api_key`
 - `missing_tracker_project_slug`
+- `missing_tracker_project`
 - `linear_api_request` (transport failures)
 - `linear_api_status` (non-200 HTTP)
 - `linear_graphql_errors`
@@ -1995,7 +2015,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.3 Issue Tracker Client
 
-- Candidate issue fetch uses active states and project slug
+- Candidate issue fetch uses active states and configured project slugs
 - Linear query uses the specified project filter field (`slugId`)
 - Empty `fetch_issues_by_states([])` returns empty without API call
 - Pagination preserves order across multiple pages

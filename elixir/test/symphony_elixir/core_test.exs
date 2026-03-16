@@ -1,6 +1,24 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Config.Schema
+  @research_started_comment "## Research Started\n\nSymphony has started the research phase for this ticket."
+
+  defmodule FakeLinearClient do
+    def graphql(query, variables) do
+      send(self(), {:fake_linear_graphql_called, query, variables})
+
+      case Process.get({__MODULE__, :graphql_results}) do
+        [result | rest] ->
+          Process.put({__MODULE__, :graphql_results}, rest)
+          result
+
+        _ ->
+          Process.get({__MODULE__, :graphql_result})
+      end
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -16,6 +34,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.project_slugs == []
     assert config.tracker.task_label == nil
     assert config.agent.max_turns == 20
 
@@ -45,6 +64,13 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
       tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_linear_project_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: ""
     )
 
     assert {:error, :missing_linear_project_slug} = Config.validate!()
@@ -87,6 +113,71 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: 123)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.project_slugs"
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: ["", "alpha", "alpha", "beta"])
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.project_slug == "alpha"
+    assert Config.settings!().tracker.project_slugs == ["alpha", "beta"]
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slugs: ["gamma", "delta"])
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.project_slug == "gamma"
+    assert Config.settings!().tracker.project_slugs == ["gamma", "delta"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: ["ignored"],
+      tracker_projects: [
+        %{slug: " alpha ", clone_url: " git@github.com:alliance/alpha.git ", github_repo: " alliance/alpha "},
+        %{slug: "beta", clone_url: "https://github.com/alliance/beta.git", github_repo: ""}
+      ]
+    )
+
+    assert :ok = Config.validate!()
+
+    assert Config.settings!().tracker.project_slug == "alpha"
+    assert Config.settings!().tracker.project_slugs == ["alpha", "beta"]
+
+    assert Config.settings!().tracker.projects == [
+             %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"},
+             %{slug: "beta", clone_url: "https://github.com/alliance/beta.git", github_repo: nil}
+           ]
+
+    assert Config.tracker_project("beta") == %{
+             slug: "beta",
+             clone_url: "https://github.com/alliance/beta.git",
+             github_repo: nil
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: nil,
+      tracker_projects: [
+        %{slug: "alpha", clone_url: ""},
+        %{slug: "beta", clone_url: "git@github.com:alliance/beta.git"}
+      ]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.projects"
+    assert message =~ "clone_url"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_project_slugs: nil,
+      tracker_projects: [
+        %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git"},
+        %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git"}
+      ]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.projects"
+    assert message =~ "unique"
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -100,24 +191,23 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert is_list(Map.get(tracker, "projects"))
     assert is_list(Map.get(tracker, "active_states"))
     assert Enum.member?(Map.get(tracker, "active_states"), "Human Review")
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-
-    assert Map.get(hooks, "after_create") =~
-             ~r/git clone --depth 1 https:\/\/github\.com\/[^\/]+\/symphony \./
-
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 \"$SYMPHONY_REPO_CLONE_URL\" ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "after_create") =~ "mise run setup"
+    assert Map.get(hooks, "before_remove") =~ "--repo \"$SYMPHONY_GITHUB_REPO\""
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
+    assert prompt =~ "mise run setup"
+    assert prompt =~ "mise run dev"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -135,6 +225,7 @@ defmodule SymphonyElixir.CoreTest do
 
     assert Config.settings!().tracker.api_key == env_api_key
     assert Config.settings!().tracker.project_slug == "project"
+    assert Config.settings!().tracker.project_slugs == ["project"]
     assert :ok = Config.validate!()
   end
 
@@ -152,6 +243,50 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+    assert Config.settings!().tracker.project_slugs == ["project"]
+  end
+
+  test "project slug normalization helper trims and falls back correctly" do
+    assert Schema.normalize_project_slugs([" alpha ", "alpha", "", "beta"]) == ["alpha", "beta"]
+    assert Schema.normalize_project_slugs(nil, " gamma ") == ["gamma"]
+    assert Schema.normalize_project_slugs(nil, "   ") == []
+  end
+
+  test "tracker project helpers normalize, validate, and derive slugs" do
+    assert Schema.normalize_tracker_projects(nil) == []
+    assert Schema.normalize_tracker_projects("invalid") == []
+
+    assert Schema.normalize_tracker_projects([
+             %{"slug" => " alpha ", "clone_url" => " git@github.com:alliance/alpha.git ", "github_repo" => " "},
+             123
+           ]) == [
+             %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: nil},
+             123
+           ]
+
+    assert Schema.validate_tracker_projects(:projects, "invalid") == [projects: "is invalid"]
+
+    assert Schema.validate_tracker_projects(:projects, [123]) == [
+             projects: "must be a list of maps"
+           ]
+
+    assert Schema.tracker_project_slugs(
+             [%{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git"}],
+             ["beta"],
+             "gamma"
+           ) == ["alpha"]
+
+    assert Schema.tracker_project_slugs([], [" beta "], nil) == ["beta"]
+    assert Schema.tracker_project_slugs("invalid", nil, " gamma ") == ["gamma"]
+  end
+
+  test "mise tasks expose setup and Phoenix-backed dev entrypoints" do
+    mise_toml = File.read!(Path.join(File.cwd!(), "mise.toml"))
+
+    assert mise_toml =~ "[tasks.setup]"
+    assert mise_toml =~ ~s(run = "mix setup")
+    assert mise_toml =~ "[tasks.dev]"
+    assert mise_toml =~ ~s(run = "mix phx.server")
   end
 
   test "tracker task label trims whitespace and disables blank values" do
@@ -1550,9 +1685,14 @@ defmodule SymphonyElixir.CoreTest do
         "symphony-elixir-agent-runner-research-phase-#{System.unique_integer([:positive])}"
       )
 
+    original_workflow_path = Workflow.workflow_file_path()
+    previous_memory_tracker_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
     try do
       template_repo = Path.join(test_root, "source")
       workspace_root = Path.join(test_root, "workspaces")
+      workflow_path = Path.join(test_root, "WORKFLOW.md")
+      research_workflow_path = Path.join(test_root, "RESEARCH_WORKFLOW.md")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex.trace")
 
@@ -1600,7 +1740,10 @@ defmodule SymphonyElixir.CoreTest do
 
       on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
-      write_workflow_file!(Workflow.workflow_file_path(),
+      Workflow.set_workflow_file_path(workflow_path)
+
+      write_workflow_file!(workflow_path,
+        tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
@@ -1608,10 +1751,9 @@ defmodule SymphonyElixir.CoreTest do
         max_turns: 2
       )
 
-      File.write!(
-        Workflow.research_workflow_file_path(),
-        "Research packet for {{ issue.identifier }}\n"
-      )
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      File.write!(research_workflow_path, "Research packet for {{ issue.identifier }}\n")
 
       parent = self()
 
@@ -1650,6 +1792,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:memory_tracker_comment, "issue-research", @research_started_comment}
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 
@@ -1674,6 +1817,8 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) == "Implementation handoff for MT-782"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
+      Workflow.set_workflow_file_path(original_workflow_path)
       File.rm_rf(test_root)
     end
   end
@@ -1685,11 +1830,14 @@ defmodule SymphonyElixir.CoreTest do
         "symphony-elixir-agent-runner-research-todo-post-transition-#{System.unique_integer([:positive])}"
       )
 
+    original_workflow_path = Workflow.workflow_file_path()
     previous_memory_tracker_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
 
     try do
       template_repo = Path.join(test_root, "source")
       workspace_root = Path.join(test_root, "workspaces")
+      workflow_path = Path.join(test_root, "WORKFLOW.md")
+      research_workflow_path = Path.join(test_root, "RESEARCH_WORKFLOW.md")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex.trace")
 
@@ -1739,7 +1887,9 @@ defmodule SymphonyElixir.CoreTest do
         restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
       end)
 
-      write_workflow_file!(Workflow.workflow_file_path(),
+      Workflow.set_workflow_file_path(workflow_path)
+
+      write_workflow_file!(workflow_path,
         tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
@@ -1748,10 +1898,7 @@ defmodule SymphonyElixir.CoreTest do
         max_turns: 2
       )
 
-      File.write!(
-        Workflow.research_workflow_file_path(),
-        "Research packet for {{ issue.identifier }} state={{ issue.state }}\n"
-      )
+      File.write!(research_workflow_path, "Research packet for {{ issue.identifier }} state={{ issue.state }}\n")
 
       parent = self()
 
@@ -1789,6 +1936,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:memory_tracker_comment, "issue-research-todo", @research_started_comment}
       assert_receive {:memory_tracker_state_update, "issue-research-todo", "In Progress"}
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
@@ -1811,6 +1959,279 @@ defmodule SymphonyElixir.CoreTest do
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
+      Workflow.set_workflow_file_path(original_workflow_path)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner does not create a research-start comment when the research workflow is missing" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-no-research-comment-#{System.unique_integer([:positive])}"
+      )
+
+    original_workflow_path = Workflow.workflow_file_path()
+    previous_memory_tracker_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      workflow_path = Path.join(test_root, "WORKFLOW.md")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-no-research"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-implement"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      Workflow.set_workflow_file_path(workflow_path)
+
+      write_workflow_file!(workflow_path,
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Implementation handoff for {{ issue.identifier }}",
+        max_turns: 1
+      )
+
+      state_fetcher = fn [_issue_id] ->
+        send(self(), {:issue_state_fetch, 1})
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-no-research",
+             identifier: "MT-784",
+             title: "Skip missing research workflow",
+             description: "No research file present",
+             state: "Done"
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-no-research",
+        identifier: "MT-784",
+        title: "Skip missing research workflow",
+        description: "No research file present",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-784",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:issue_state_fetch, 1}
+      refute_received {:memory_tracker_comment, "issue-no-research", _body}
+
+      turn_texts =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert turn_texts == ["Implementation handoff for MT-784"]
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
+      Workflow.set_workflow_file_path(original_workflow_path)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner continues the research workflow when creating the kickoff comment fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-research-comment-failure-#{System.unique_integer([:positive])}"
+      )
+
+    original_workflow_path = Workflow.workflow_file_path()
+    previous_linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      workflow_path = Path.join(test_root, "WORKFLOW.md")
+      research_workflow_path = Path.join(test_root, "RESEARCH_WORKFLOW.md")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-research-failure"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-research"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-implement"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      Workflow.set_workflow_file_path(workflow_path)
+
+      write_workflow_file!(workflow_path,
+        tracker_kind: "linear",
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Implementation handoff for {{ issue.identifier }}",
+        max_turns: 2
+      )
+
+      File.write!(research_workflow_path, "Research packet for {{ issue.identifier }}\n")
+
+      Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+      Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:research_comment_failure_fetch_count, 0) + 1
+        Process.put(:research_comment_failure_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        state =
+          if attempt == 1 do
+            "In Progress"
+          else
+            "Done"
+          end
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-research-failing-comment",
+             identifier: "MT-785",
+             title: "Continue after kickoff comment failure",
+             description: "Research handoff flow",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-research-failing-comment",
+        identifier: "MT-785",
+        title: "Continue after kickoff comment failure",
+        description: "Research handoff flow",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-785",
+        labels: []
+      }
+
+      log =
+        capture_log(fn ->
+          assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+        end)
+
+      assert log =~ "Failed to create research-start comment"
+      assert_receive {:fake_linear_graphql_called, create_comment_query, variables}
+      assert create_comment_query =~ "commentCreate"
+
+      assert variables == %{
+               body: @research_started_comment,
+               issueId: "issue-research-failing-comment"
+             }
+
+      assert_receive {:issue_state_fetch, 1}
+      assert_receive {:issue_state_fetch, 2}
+
+      turn_texts =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert turn_texts == [
+               "Research packet for MT-785",
+               "Implementation handoff for MT-785"
+             ]
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      restore_app_env(:linear_client_module, previous_linear_client_module)
+      Workflow.set_workflow_file_path(original_workflow_path)
       File.rm_rf(test_root)
     end
   end

@@ -81,21 +81,23 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 0
       """,
       fn log_path ->
-        {output, error_output} =
-          capture_task_output(fn ->
-            BeforeRemove.run([])
-          end)
+        with_env(%{"SYMPHONY_GITHUB_REPO" => "openai/symphony"}, fn ->
+          {output, error_output} =
+            capture_task_output(fn ->
+              BeforeRemove.run([])
+            end)
 
-        assert output =~ "Closed PR #101 for branch feature/workpad"
-        assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
+          assert output =~ "Closed PR #101 for branch feature/workpad"
+          assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
 
-        log = File.read!(log_path)
+          log = File.read!(log_path)
 
-        assert log =~
-                 "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
+          assert log =~
+                   "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
 
-        assert log =~ "pr close 101 --repo openai/symphony"
-        assert log =~ "pr close 102 --repo openai/symphony"
+          assert log =~ "pr close 101 --repo openai/symphony"
+          assert log =~ "pr close 102 --repo openai/symphony"
+        end)
       end
     )
   end
@@ -104,29 +106,31 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_fake_gh(fn log_path ->
       File.write!(log_path, "")
 
-      {output, error_output} =
-        capture_task_output(fn ->
-          BeforeRemove.run(["--branch", "feature/workpad"])
-        end)
+      with_env(%{"SYMPHONY_GITHUB_REPO" => "openai/symphony"}, fn ->
+        {output, error_output} =
+          capture_task_output(fn ->
+            BeforeRemove.run(["--branch", "feature/workpad"])
+          end)
 
-      assert output =~ "Closed PR #101 for branch feature/workpad"
-      assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
+        assert output =~ "Closed PR #101 for branch feature/workpad"
+        assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
 
-      log = File.read!(log_path)
+        log = File.read!(log_path)
 
-      assert log =~ "auth status"
-      assert log =~ "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
-      assert log =~ "pr close 101 --repo openai/symphony"
-      assert log =~ "pr close 102 --repo openai/symphony"
+        assert log =~ "auth status"
+        assert log =~ "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
+        assert log =~ "pr close 101 --repo openai/symphony"
+        assert log =~ "pr close 102 --repo openai/symphony"
 
-      {second_output, error_output} =
-        capture_task_output(fn ->
-          Mix.Task.reenable("workspace.before_remove")
-          BeforeRemove.run(["--branch", "feature/workpad"])
-        end)
+        {second_output, error_output} =
+          capture_task_output(fn ->
+            Mix.Task.reenable("workspace.before_remove")
+            BeforeRemove.run(["--branch", "feature/workpad"])
+          end)
 
-      assert second_output =~ "Closed PR #101 for branch feature/workpad"
-      assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
+        assert second_output =~ "Closed PR #101 for branch feature/workpad"
+        assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
+      end)
     end)
   end
 
@@ -152,17 +156,19 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 99
       """,
       fn log_path ->
-        error_output =
-          capture_io(:stderr, fn ->
-            Mix.Task.reenable("workspace.before_remove")
-            BeforeRemove.run(["--branch", "feature/no-output"])
-          end)
+        with_env(%{"SYMPHONY_GITHUB_REPO" => "openai/symphony"}, fn ->
+          error_output =
+            capture_io(:stderr, fn ->
+              Mix.Task.reenable("workspace.before_remove")
+              BeforeRemove.run(["--branch", "feature/no-output"])
+            end)
 
-        assert error_output =~ "Failed to close PR #102 for branch feature/no-output: exit 17"
-        refute error_output =~ "output="
-        log = File.read!(log_path)
-        assert log =~ "pr list --repo openai/symphony --head feature/no-output --state open --json number --jq .[].number"
-        assert log =~ "pr close 102 --repo openai/symphony"
+          assert error_output =~ "Failed to close PR #102 for branch feature/no-output: exit 17"
+          refute error_output =~ "output="
+          log = File.read!(log_path)
+          assert log =~ "pr list --repo openai/symphony --head feature/no-output --state open --json number --jq .[].number"
+          assert log =~ "pr close 102 --repo openai/symphony"
+        end)
       end
     )
   end
@@ -184,20 +190,22 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 99
       """,
       fn log_path ->
-        output =
-          capture_io(fn ->
-            BeforeRemove.run(["--branch", "feature/list-fails"])
-          end)
+        with_env(%{"SYMPHONY_GITHUB_REPO" => "openai/symphony"}, fn ->
+          output =
+            capture_io(fn ->
+              BeforeRemove.run(["--branch", "feature/list-fails"])
+            end)
 
-        assert output == ""
+          assert output == ""
 
-        log = File.read!(log_path)
-        assert log =~ "auth status"
+          log = File.read!(log_path)
+          assert log =~ "auth status"
 
-        assert log =~
-                 "pr list --repo openai/symphony --head feature/list-fails --state open --json number --jq .[].number"
+          assert log =~
+                   "pr list --repo openai/symphony --head feature/list-fails --state open --json number --jq .[].number"
 
-        refute log =~ "pr close"
+          refute log =~ "pr close"
+        end)
       end
     )
   end
@@ -234,6 +242,41 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  test "no-ops when branch is unavailable even if repo is configured" do
+    with_fake_gh_and_git(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      """
+      #!/bin/sh
+      printf '\n'
+      exit 0
+      """,
+      fn log_path ->
+        with_env(%{"SYMPHONY_GITHUB_REPO" => "alliance/alpha"}, fn ->
+          output =
+            capture_io(fn ->
+              BeforeRemove.run([])
+            end)
+
+          assert output == ""
+
+          log = File.read!(log_path)
+          assert log == ""
+          refute log =~ "auth status"
+          refute log =~ "pr list"
+        end)
+      end
+    )
+  end
+
   test "no-ops when gh auth is unavailable" do
     with_fake_gh(
       """
@@ -245,13 +288,100 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 99
       """,
       fn log_path ->
-        BeforeRemove.run(["--branch", "feature/no-auth"])
+        with_env(%{"SYMPHONY_GITHUB_REPO" => "openai/symphony"}, fn ->
+          BeforeRemove.run(["--branch", "feature/no-auth"])
 
-        log = File.read!(log_path)
-        assert log =~ "auth status"
-        refute log =~ "pr list"
+          log = File.read!(log_path)
+          assert log =~ "auth status"
+          refute log =~ "pr list"
+        end)
       end
     )
+  end
+
+  test "uses SYMPHONY_GITHUB_REPO when repo option is omitted" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => "alliance/alpha"}, fn ->
+        {output, _error_output} =
+          capture_task_output(fn ->
+            BeforeRemove.run(["--branch", "feature/env-repo"])
+          end)
+
+        assert output =~ "Closed PR #101 for branch feature/env-repo"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo alliance/alpha --head feature/env-repo --state open --json number --jq .[].number"
+        assert log =~ "pr close 101 --repo alliance/alpha"
+      end)
+    end)
+  end
+
+  test "uses explicit repo option instead of SYMPHONY_GITHUB_REPO" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => "alliance/env"}, fn ->
+        {output, _error_output} =
+          capture_task_output(fn ->
+            BeforeRemove.run(["--branch", "feature/explicit-repo", "--repo", "alliance/explicit"])
+          end)
+
+        assert output =~ "Closed PR #101 for branch feature/explicit-repo"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo alliance/explicit --head feature/explicit-repo --state open --json number --jq .[].number"
+        assert log =~ "pr close 101 --repo alliance/explicit"
+        refute log =~ "alliance/env"
+      end)
+    end)
+  end
+
+  test "no-ops when repo cannot be resolved from options or env" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => nil}, fn ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/no-repo"])
+          end)
+
+        assert output == ""
+
+        log = File.read!(log_path)
+        assert log == ""
+      end)
+    end)
+  end
+
+  test "blank repo option falls back to SYMPHONY_GITHUB_REPO when available" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => "alliance/fallback"}, fn ->
+        {output, _error_output} =
+          capture_task_output(fn ->
+            BeforeRemove.run(["--branch", "feature/blank-repo", "--repo", ""])
+          end)
+
+        assert output =~ "Closed PR #101 for branch feature/blank-repo"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo alliance/fallback --head feature/blank-repo --state open --json number --jq .[].number"
+        assert log =~ "pr close 101 --repo alliance/fallback"
+      end)
+    end)
+  end
+
+  test "blank repo option disables repo fallback when no env repo is available" do
+    with_fake_gh(fn log_path ->
+      with_env(%{"SYMPHONY_GITHUB_REPO" => ""}, fn ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/no-repo", "--repo", ""])
+          end)
+
+        assert output == ""
+
+        log = File.read!(log_path)
+        assert log == ""
+        refute log =~ "pr list"
+      end)
+    end)
   end
 
   defp with_fake_gh(fun) do
@@ -336,7 +466,11 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     previous = Map.new(keys, fn key -> {key, System.get_env(key)} end)
 
     try do
-      Enum.each(overrides, fn {key, value} -> System.put_env(key, value) end)
+      Enum.each(overrides, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+
       fun.()
     after
       Enum.each(previous, fn

@@ -85,6 +85,44 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("super_busy", render_snapshot(snapshot_data, 1_842.7))
   end
 
+  test "snapshot fixture: running dashboard grouped by project" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slugs: ["alpha", "beta"])
+
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           running_entry(%{
+             identifier: "MT-210",
+             project_name: "Beta",
+             project_slug: "beta",
+             last_codex_event: "codex/event/task_started",
+             last_codex_message: exec_command_message("mix test")
+           }),
+           running_entry(%{
+             identifier: "MT-120",
+             project_name: "Alpha",
+             project_slug: "alpha",
+             last_codex_event: "turn_completed",
+             last_codex_message: turn_completed_message("completed")
+           }),
+           running_entry(%{
+             identifier: "MT-110",
+             project_name: "Alpha",
+             project_slug: "alpha",
+             codex_total_tokens: 800,
+             runtime_seconds: 120,
+             turn_count: 2
+           })
+         ],
+         retrying: [],
+         codex_totals: %{input_tokens: 2_000, output_tokens: 400, total_tokens: 2_400, seconds_running: 600},
+         rate_limits: nil
+       }}
+
+    Snapshot.assert_dashboard_snapshot!("project_grouped", render_snapshot(snapshot_data, 12.5))
+  end
+
   test "snapshot fixture: backoff queue pressure" do
     snapshot_data =
       {:ok,
@@ -203,6 +241,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
       %{
         identifier: "MT-000",
         state: "running",
+        project_name: nil,
+        project_slug: nil,
         session_id: "thread-1234567890",
         codex_app_server_pid: "4242",
         codex_total_tokens: 0,

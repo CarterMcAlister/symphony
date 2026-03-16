@@ -96,6 +96,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
           tracker_project_slug: "project",
+          tracker_project_slugs: nil,
+          tracker_projects: nil,
           tracker_assignee: nil,
           tracker_task_label: nil,
           tracker_active_states: ["Todo", "In Progress"],
@@ -134,6 +136,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
+    tracker_project_slugs = Keyword.get(config, :tracker_project_slugs)
+    tracker_projects = Keyword.get(config, :tracker_projects)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_task_label = Keyword.get(config, :tracker_task_label)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
@@ -172,7 +176,7 @@ defmodule SymphonyElixir.TestSupport do
         "  kind: #{yaml_value(tracker_kind)}",
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
-        "  project_slug: #{yaml_value(tracker_project_slug)}",
+        tracker_project_yaml(tracker_projects, tracker_project_slugs, tracker_project_slug),
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  task_label: #{yaml_value(tracker_task_label)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
@@ -241,6 +245,18 @@ defmodule SymphonyElixir.TestSupport do
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
+  end
+
+  defp tracker_project_yaml(projects, _project_slugs, _project_slug) when is_list(projects) do
+    "  projects: #{yaml_value(projects)}"
+  end
+
+  defp tracker_project_yaml(nil, project_slugs, _project_slug) when is_list(project_slugs) do
+    "  project_slugs: #{yaml_value(project_slugs)}"
+  end
+
+  defp tracker_project_yaml(nil, nil, project_slug) do
+    "  project_slug: #{yaml_value(project_slug)}"
   end
 
   defp worker_yaml(ssh_hosts, max_concurrent_agents_per_host)
