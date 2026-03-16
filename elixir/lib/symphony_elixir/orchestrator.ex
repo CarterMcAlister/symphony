@@ -132,16 +132,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           case reason do
             :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-              state
-              |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              handle_normal_agent_exit(state, issue_id, session_id, running_entry)
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -638,6 +629,36 @@ defmodule SymphonyElixir.Orchestrator do
   defp active_issue_state?(state_name, active_states) when is_binary(state_name) do
     MapSet.member?(active_states, normalize_issue_state(state_name))
   end
+
+  defp handle_normal_agent_exit(state, issue_id, session_id, running_entry) do
+    if running_entry
+       |> Map.get(:issue)
+       |> then(&Map.get(&1 || %{}, :state))
+       |> monitor_issue_state?() do
+      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; waiting for the next scheduled poll because the issue is in Human Review")
+
+      state
+      |> complete_issue(issue_id)
+      |> release_issue_claim(issue_id)
+    else
+      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+      state
+      |> complete_issue(issue_id)
+      |> schedule_issue_retry(issue_id, 1, %{
+        identifier: running_entry.identifier,
+        delay_type: :continuation,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    end
+  end
+
+  defp monitor_issue_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "human review"
+  end
+
+  defp monitor_issue_state?(_state_name), do: false
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))
