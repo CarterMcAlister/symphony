@@ -213,6 +213,11 @@ defmodule SymphonyElixir.AgentRunner do
 
           :ok
 
+        {:wait, refreshed_issue} ->
+          Logger.info("Reached monitor-only state for #{issue_context(refreshed_issue)}; waiting for orchestrator polling instead of immediate continuation")
+
+          :ok
+
         {:done, _refreshed_issue} ->
           :ok
 
@@ -239,10 +244,15 @@ defmodule SymphonyElixir.AgentRunner do
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case refresh_issue_state(issue, issue_state_fetcher) do
       {:ok, refreshed_issue} ->
-        if active_issue_state?(refreshed_issue.state) do
-          {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
+        cond do
+          monitor_issue_state?(refreshed_issue.state) ->
+            {:wait, refreshed_issue}
+
+          active_issue_state?(refreshed_issue.state) ->
+            {:continue, refreshed_issue}
+
+          true ->
+            {:done, refreshed_issue}
         end
 
       {:error, reason} ->
@@ -275,6 +285,12 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp active_issue_state?(_state_name), do: false
+
+  defp monitor_issue_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "human review"
+  end
+
+  defp monitor_issue_state?(_state_name), do: false
 
   defp candidate_worker_hosts(nil, []), do: [nil]
 

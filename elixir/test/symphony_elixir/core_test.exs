@@ -102,6 +102,7 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(tracker, "kind") == "linear"
     assert is_binary(Map.get(tracker, "project_slug"))
     assert is_list(Map.get(tracker, "active_states"))
+    assert Enum.member?(Map.get(tracker, "active_states"), "Human Review")
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
@@ -569,6 +570,34 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.completed, issue_id)
     assert is_integer(due_at_ms)
     assert_retry_scheduled_between(due_at_ms, 1_000, before_send_ms, observed_ms)
+  end
+
+  test "normal Human Review worker exit waits for the next poll instead of scheduling continuation retry" do
+    issue_id = "issue-human-review"
+    ref = make_ref()
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: ref,
+          identifier: "MT-558A",
+          issue: %Issue{id: issue_id, identifier: "MT-558A", state: "Human Review"},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:DOWN, ref, :process, self(), :normal}, state)
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute Map.has_key?(updated_state.retry_attempts, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+    assert MapSet.member?(updated_state.completed, issue_id)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -1389,6 +1418,125 @@ defmodule SymphonyElixir.CoreTest do
       refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner stops after a Human Review wait turn instead of consuming continuation turns" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-human-review-wait-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      run_id="$(date +%s%N)-$$"
+      printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-review"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-review-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-review-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 3,
+        tracker_active_states: ["Todo", "In Progress", "Human Review"]
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:human_review_wait_fetch_count, 0) + 1
+        Process.put(:human_review_wait_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-human-review-wait",
+             identifier: "MT-514",
+             title: "Wait in Human Review",
+             description: "Should not recurse through continuation turns",
+             state: "Human Review"
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-human-review-wait",
+        identifier: "MT-514",
+        title: "Wait in Human Review",
+        description: "Should not recurse through continuation turns",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-514",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:issue_state_fetch, 1}
+      refute_receive {:issue_state_fetch, 2}, 200
+
+      turn_texts =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert length(turn_texts) == 1
+      assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
