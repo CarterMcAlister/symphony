@@ -48,6 +48,13 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
+   - The shipped workflow fetches unresolved non-agent Linear issue comments during active
+     `Todo` / `In Progress` execution and again while a ticket waits in `Human Review`.
+   - Keep `Human Review` in `tracker.active_states` so the orchestrator revisits those tickets
+     during polling.
+   - Agent-managed issue comments should stay marker-prefixed (`## Codex Workpad`,
+     `## Open Questions`, `## Research Started`) so the workflow can ignore them
+     when collecting human steering input.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites

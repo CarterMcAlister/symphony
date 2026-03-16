@@ -174,6 +174,9 @@ defmodule SymphonyElixir.AgentRunner do
           {:continue, refreshed_issue} ->
             {:ok, refreshed_issue}
 
+          {:wait, _refreshed_issue} ->
+            :done
+
           {:done, _refreshed_issue} ->
             :done
 
@@ -230,6 +233,11 @@ defmodule SymphonyElixir.AgentRunner do
 
           :ok
 
+        {:wait, refreshed_issue} ->
+          Logger.info("Reached monitor-only state for #{issue_context(refreshed_issue)}; waiting for orchestrator polling instead of immediate continuation")
+
+          :ok
+
         {:done, _refreshed_issue} ->
           :ok
 
@@ -248,6 +256,7 @@ defmodule SymphonyElixir.AgentRunner do
     - The previous Codex turn completed normally, but the Linear issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
+    - Before acting, re-fetch current unresolved non-agent Linear issue comments and threaded replies via `linear_graphql`, then fold any new actionable input into the workpad plan/notes.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
@@ -256,10 +265,15 @@ defmodule SymphonyElixir.AgentRunner do
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case refresh_issue_state(issue, issue_state_fetcher) do
       {:ok, refreshed_issue} ->
-        if active_issue_state?(refreshed_issue.state) do
-          {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
+        cond do
+          monitor_issue_state?(refreshed_issue.state) ->
+            {:wait, refreshed_issue}
+
+          active_issue_state?(refreshed_issue.state) ->
+            {:continue, refreshed_issue}
+
+          true ->
+            {:done, refreshed_issue}
         end
 
       {:error, reason} ->
@@ -292,6 +306,12 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp active_issue_state?(_state_name), do: false
+
+  defp monitor_issue_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "human review"
+  end
+
+  defp monitor_issue_state?(_state_name), do: false
 
   defp candidate_worker_hosts(nil, []), do: [nil]
 

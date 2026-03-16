@@ -10,6 +10,7 @@ tracker:
   active_states:
     - Todo
     - In Progress
+    - Human Review
     - Merging
     - Rework
   terminal_states:
@@ -118,9 +119,9 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
 - `In Progress` -> implementation actively underway.
-- `Human Review` -> PR is attached and validated; waiting on human approval.
+- `Human Review` -> PR is attached and validated; waiting on human approval or new ticket/PR feedback.
 - `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
-- `Rework` -> reviewer requested changes; planning + implementation required.
+- `Rework` -> explicit full-reset/manual restart path when incremental continuation is no longer safe.
 - `Done` -> terminal state; no further action required.
 
 ## Step 0: Determine current ticket state and route
@@ -157,28 +158,32 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - Read `Research`, `Research - PRD`, and `Research - Questions` when present.
     - Treat those documents as the default handoff from the research phase and mirror the relevant findings in the workpad plan/notes.
     - If the documents are missing, proceed with direct issue investigation and record that fact in the workpad `Notes`.
-3.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
-4.  Immediately reconcile the workpad before new edits:
+3.  Before new planning, fetch the current unresolved non-agent Linear issue comments via `linear_graphql`.
+    - Include threaded replies as well as top-level comments.
+    - Ignore comments starting with `## Codex Workpad`, `## Open Questions`, or `## Research Started`.
+    - Mirror any actionable comment requirements into the workpad plan/notes before coding.
+4.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
+5.  Immediately reconcile the workpad before new edits:
     - Check off items that are already done.
     - Expand/fix the plan so it is comprehensive for current scope.
     - Ensure `Acceptance Criteria` and `Validation` are current and still make sense for the task.
-5.  Start work by writing/updating a hierarchical plan in the workpad comment.
-6.  Ensure the workpad includes a compact environment stamp at the top as a code fence line:
+6.  Start work by writing/updating a hierarchical plan in the workpad comment.
+7.  Ensure the workpad includes a compact environment stamp at the top as a code fence line:
     - Format: `<host>:<abs-workdir>@<short-sha>`
     - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/MT-32@7bdde33bc`
     - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
-7.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
+8.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
     - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
-8.  Run a principal-style self-review of the plan and refine it in the comment.
-9.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-10. Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
+9.  Run a principal-style self-review of the plan and refine it in the comment.
+10. Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
+11. Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
     - Include a `pull skill evidence` note with:
       - merge source(s),
       - result (`clean` or `conflicts resolved`),
       - resulting `HEAD` short SHA.
-11. Compact context and proceed to execution.
+12. Compact context and proceed to execution.
 
 ## PR feedback sweep protocol (required)
 
@@ -255,12 +260,33 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 3: Human Review and merge handling
 
-1. When the issue is in `Human Review`, do not code or change ticket content.
-2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+1. When the issue is in `Human Review`, do not make speculative code changes. Start by polling for updates from both:
+   - GitHub PR review comments from humans and bots.
+   - Linear issue comments via `linear_graphql`, alongside the current issue attachments and `stateHistory`.
+2. For Linear issue comments, fetch the current issue with:
+   - unresolved comments,
+   - attachments,
+   - `stateHistory`.
+   Then compute the newest `Human Review` entry from `stateHistory` and treat only comments created after that timestamp as fresh Human Review steering input.
+3. Ignore agent-managed issue comments when looking for Human Review steering:
+   - comments starting with `## Codex Workpad`
+   - comments starting with `## Open Questions`
+   - comments starting with `## Research Started`
+4. If fresh actionable Human Review feedback exists but there is no attached open PR:
+   - update the existing `## Codex Workpad` with a concise blocker brief,
+   - treat the issue as blocked,
+   - do not auto-create a new branch or PR.
+5. If fresh Human Review feedback requires changes and an attached open PR exists:
+   - move the issue to `In Progress`,
+   - keep the existing `## Codex Workpad`,
+   - keep using the existing workspace/branch,
+   - keep using the existing attached PR when present,
+   - then resume the normal Step 1 / Step 2 execution flow instead of the `Rework` reset flow.
+6. If no fresh actionable Human Review feedback exists, do not code or churn ticket content; end the turn and wait for the next poll.
+7. Reserve `Rework` for explicit full-reset/manual restart cases where the existing PR/workspace should be abandoned.
+8. If approved, human moves the issue to `Merging`.
+9. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
+10. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
@@ -299,7 +325,7 @@ Use this only when completion is blocked by missing required tools or missing au
   link to the current issue, and `blockedBy` when the follow-up depends on the
   current issue.
 - Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
-- In `Human Review`, do not make changes; wait and poll.
+- In `Human Review`, only resume coding when fresh post-entry Linear issue comments or PR feedback require changes; otherwise wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
 - If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
