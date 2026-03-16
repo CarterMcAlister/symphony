@@ -670,6 +670,12 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"}
+    ])
+
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
@@ -707,9 +713,14 @@ defmodule SymphonyElixir.CoreTest do
     assert_retry_scheduled_between(due_at_ms, 1_000, before_send_ms, observed_ms)
   end
 
-  test "normal Human Review worker exit waits for the next poll instead of scheduling continuation retry" do
+  test "normal worker exit waits for the next poll when refreshed issue state is Human Review" do
     issue_id = "issue-human-review"
     ref = make_ref()
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      %Issue{id: issue_id, identifier: "MT-558A", state: "Human Review"}
+    ])
 
     state = %Orchestrator.State{
       running: %{
@@ -717,7 +728,7 @@ defmodule SymphonyElixir.CoreTest do
           pid: self(),
           ref: ref,
           identifier: "MT-558A",
-          issue: %Issue{id: issue_id, identifier: "MT-558A", state: "Human Review"},
+          issue: %Issue{id: issue_id, identifier: "MT-558A", state: "In Progress"},
           started_at: DateTime.utc_now()
         }
       },
@@ -1678,6 +1689,142 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner stops after the research workflow when the refreshed issue is in Human Review" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-research-human-review-wait-#{System.unique_integer([:positive])}"
+      )
+
+    original_workflow_path = Workflow.workflow_file_path()
+    previous_memory_tracker_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      workflow_path = Path.join(test_root, "WORKFLOW.md")
+      research_workflow_path = Path.join(test_root, "RESEARCH_WORKFLOW.md")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      run_id="$(date +%s%N)-$$"
+      printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-research-review"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-research-review"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-implement-review"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      Workflow.set_workflow_file_path(workflow_path)
+
+      write_workflow_file!(workflow_path,
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Implementation handoff for {{ issue.identifier }}",
+        max_turns: 2
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      File.write!(research_workflow_path, "Research packet for {{ issue.identifier }}\n")
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:research_human_review_fetch_count, 0) + 1
+        Process.put(:research_human_review_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-research-review",
+             identifier: "MT-782A",
+             title: "Wait in Human Review after research",
+             description: "Research handoff should stop cleanly",
+             state: "Human Review"
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-research-review",
+        identifier: "MT-782A",
+        title: "Wait in Human Review after research",
+        description: "Research handoff should stop cleanly",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-782A",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:memory_tracker_comment, "issue-research-review", @research_started_comment}
+      assert_receive {:issue_state_fetch, 1}
+      refute_receive {:issue_state_fetch, 2}, 200
+
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+
+      assert length(Enum.filter(lines, &String.starts_with?(&1, "RUN:"))) == 1
+      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"thread/start\""))) == 1
+
+      turn_texts =
+        lines
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert turn_texts == ["Research packet for MT-782A"]
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      restore_app_env(:memory_tracker_recipient, previous_memory_tracker_recipient)
+      Workflow.set_workflow_file_path(original_workflow_path)
       File.rm_rf(test_root)
     end
   end

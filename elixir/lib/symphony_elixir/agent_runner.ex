@@ -174,6 +174,9 @@ defmodule SymphonyElixir.AgentRunner do
           {:continue, refreshed_issue} ->
             {:ok, refreshed_issue}
 
+          {:wait, _refreshed_issue} ->
+            :done
+
           {:done, _refreshed_issue} ->
             :done
 

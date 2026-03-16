@@ -632,8 +632,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_normal_agent_exit(state, issue_id, session_id, running_entry) do
-    if running_entry
-       |> Map.get(:issue)
+    exit_issue = refresh_issue_state_for_normal_exit(running_entry, &Tracker.fetch_issue_states_by_ids/1)
+
+    if exit_issue
        |> then(&Map.get(&1 || %{}, :state))
        |> monitor_issue_state?() do
       Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; waiting for the next scheduled poll because the issue is in Human Review")
@@ -654,6 +655,24 @@ defmodule SymphonyElixir.Orchestrator do
       })
     end
   end
+
+  defp refresh_issue_state_for_normal_exit(%{issue: %Issue{id: issue_id} = issue}, issue_fetcher)
+       when is_binary(issue_id) and is_function(issue_fetcher, 1) do
+    case issue_fetcher.([issue_id]) do
+      {:ok, [%Issue{} = refreshed_issue | _]} ->
+        refreshed_issue
+
+      {:ok, []} ->
+        issue
+
+      {:error, reason} ->
+        Logger.warning("Failed to refresh issue state on normal exit for #{issue_context(issue)}: #{inspect(reason)}")
+        issue
+    end
+  end
+
+  defp refresh_issue_state_for_normal_exit(%{issue: issue}, _issue_fetcher), do: issue
+  defp refresh_issue_state_for_normal_exit(_running_entry, _issue_fetcher), do: nil
 
   defp monitor_issue_state?(state_name) when is_binary(state_name) do
     normalize_issue_state(state_name) == "human review"
