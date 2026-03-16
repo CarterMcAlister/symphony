@@ -941,9 +941,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
+    before_tick_ms = System.monotonic_time(:millisecond)
     send(pid, :tick)
-    Process.sleep(100)
-    state = :sys.get_state(pid)
+
+    {state, retry_entry, observed_ms} =
+      wait_for_retry_entry(pid, issue_id, System.monotonic_time(:millisecond) + 2_000)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -953,12 +955,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
              error: "stalled for " <> _
-           } = state.retry_attempts[issue_id]
+           } = retry_entry
 
     assert is_integer(due_at_ms)
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
-    assert remaining_ms <= 10_500
+    assert_retry_scheduled_between(due_at_ms, 10_000, before_tick_ms, observed_ms)
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -1569,6 +1569,37 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         Process.sleep(5)
         do_wait_for_snapshot(pid, predicate, deadline_ms)
       end
+    end
+  end
+
+  defp assert_retry_scheduled_between(
+         due_at_ms,
+         expected_delay_ms,
+         earliest_schedule_ms,
+         latest_observed_ms
+       ) do
+    scheduled_at_ms = due_at_ms - expected_delay_ms
+    assert scheduled_at_ms >= earliest_schedule_ms
+    assert scheduled_at_ms <= latest_observed_ms
+  end
+
+  defp wait_for_retry_entry(pid, issue_id, deadline_ms)
+       when is_pid(pid) and is_binary(issue_id) and is_integer(deadline_ms) do
+    state = :sys.get_state(pid)
+
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        now_ms = System.monotonic_time(:millisecond)
+
+        if now_ms >= deadline_ms do
+          flunk("retry entry for #{issue_id} did not appear before timeout")
+        else
+          Process.sleep(10)
+          wait_for_retry_entry(pid, issue_id, deadline_ms)
+        end
+
+      retry_entry ->
+        {state, retry_entry, System.monotonic_time(:millisecond)}
     end
   end
 
