@@ -40,8 +40,11 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 5. Customize the copied `WORKFLOW.md` file for your project.
    - `RESEARCH_WORKFLOW.md` runs before `WORKFLOW.md` when it lives next to the active workflow
      file. Use it to capture research and PRD/spec handoff artifacts on the ticket before coding.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
+   - To get a project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
+   - To track multiple Linear projects, list each slug under `tracker.project_slugs`.
+   - When different project slugs map to different repos, prefer `tracker.projects`; Symphony
+     derives `tracker.project_slugs` from those entries automatically.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
@@ -63,9 +66,8 @@ git clone https://github.com/openai/symphony
 cd symphony/elixir
 mise trust
 mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise run setup
+mise run dev
 ```
 
 ## Configuration
@@ -92,14 +94,17 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  projects:
+    - slug: "..."
+      clone_url: "git@github.com:your-org/project-a.git"
+      github_repo: "your-org/project-a"
   # Optional: only dispatch/run issues whose label matches this name.
   # task_label: "backend"
 workspace:
   root: ~/code/workspaces
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    git clone "$SYMPHONY_REPO_CLONE_URL" .
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -128,10 +133,22 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- `tracker.projects` is the canonical way to map multiple Linear project slugs to different repos.
+  Each entry should include `slug`, `clone_url`, and optionally `github_repo`.
+- If an issue arrives with a `project_slug` that is not present in `tracker.projects`, Symphony
+  now fails workspace bootstrap early and skips repo-dependent cleanup hooks instead of falling
+  back to blank repo env vars or a hardcoded repo.
+- Legacy `tracker.project_slug` and `tracker.project_slugs` remain supported for workflows where
+  one global hook/bootstrap setup applies to every issue.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- Symphony exports `SYMPHONY_PROJECT_SLUG`, `SYMPHONY_PROJECT_NAME`, `SYMPHONY_REPO_CLONE_URL`,
+  and `SYMPHONY_GITHUB_REPO` into hook environments so hooks can react to the current issue's
+  configured project mapping.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
+- This repo defines `mise run setup` for dependency bootstrap, `mise run dev` for the default
+  Phoenix dev-server entrypoint, and `mise run start` for the escript entrypoint.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - `tracker.assignee` reads from `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
 - `tracker.task_label` is optional. When set, Symphony only dispatches and continues running issues

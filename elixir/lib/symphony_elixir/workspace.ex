@@ -18,7 +18,8 @@ defmodule SymphonyElixir.Workspace do
     try do
       safe_id = safe_identifier(issue_context.issue_identifier)
 
-      with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
+      with :ok <- validate_tracker_project_mapping(issue_context),
+           {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
@@ -85,15 +86,23 @@ defmodule SymphonyElixir.Workspace do
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
-  def remove(workspace), do: remove(workspace, nil)
+  def remove(workspace), do: do_remove(workspace, default_issue_context(workspace), nil)
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace, nil) do
+    do_remove(workspace, default_issue_context(workspace), nil)
+  end
+
+  def remove(workspace, worker_host) when is_binary(worker_host) do
+    do_remove(workspace, default_issue_context(workspace), worker_host)
+  end
+
+  defp do_remove(workspace, issue_context, nil) do
     case File.exists?(workspace) do
       true ->
         case validate_workspace_path(workspace, nil) do
           :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
+            maybe_run_before_remove_hook(workspace, issue_context, nil)
             File.rm_rf(workspace)
 
           {:error, reason} ->
@@ -105,8 +114,8 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  def remove(workspace, worker_host) when is_binary(worker_host) do
-    maybe_run_before_remove_hook(workspace, worker_host)
+  defp do_remove(workspace, issue_context, worker_host) when is_binary(worker_host) do
+    maybe_run_before_remove_hook(workspace, issue_context, worker_host)
 
     script =
       [
@@ -131,29 +140,31 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
-  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
-    safe_id = safe_identifier(identifier)
+  def remove_issue_workspaces(issue_or_identifier, worker_host) when is_binary(worker_host) do
+    case removable_issue_context(issue_or_identifier) do
+      {:ok, issue_context} ->
+        remove_issue_workspace(issue_context, worker_host)
 
-    case workspace_path_for_issue(safe_id, worker_host) do
-      {:ok, workspace} -> remove(workspace, worker_host)
-      {:error, _reason} -> :ok
+      :error ->
+        :ok
     end
 
     :ok
   end
 
-  def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
-    safe_id = safe_identifier(identifier)
+  def remove_issue_workspaces(issue_or_identifier, nil) do
+    case removable_issue_context(issue_or_identifier) do
+      {:ok, issue_context} ->
+        case Config.settings!().worker.ssh_hosts do
+          [] ->
+            remove_issue_workspace(issue_context, nil)
 
-    case Config.settings!().worker.ssh_hosts do
-      [] ->
-        case workspace_path_for_issue(safe_id, nil) do
-          {:ok, workspace} -> remove(workspace, nil)
-          {:error, _reason} -> :ok
+          worker_hosts ->
+            Enum.each(worker_hosts, &remove_issue_workspace(issue_context, &1))
         end
 
-      worker_hosts ->
-        Enum.each(worker_hosts, &remove_issue_workspaces(identifier, &1))
+      :error ->
+        :ok
     end
 
     :ok
@@ -161,6 +172,15 @@ defmodule SymphonyElixir.Workspace do
 
   def remove_issue_workspaces(_identifier, _worker_host) do
     :ok
+  end
+
+  defp remove_issue_workspace(issue_context, worker_host) do
+    safe_id = safe_identifier(issue_context.issue_identifier)
+
+    case workspace_path_for_issue(safe_id, worker_host) do
+      {:ok, workspace} -> do_remove(workspace, issue_context, worker_host)
+      {:error, _reason} -> :ok
+    end
   end
 
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
@@ -225,71 +245,89 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_run_before_remove_hook(workspace, nil) do
+  defp maybe_run_before_remove_hook(workspace, issue_context, nil) do
     hooks = Config.settings!().hooks
 
-    case File.dir?(workspace) do
-      true ->
-        case hooks.before_remove do
-          nil ->
-            :ok
-
-          command ->
-            run_hook(
-              command,
-              workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
-              "before_remove",
-              nil
-            )
-            |> ignore_hook_failure()
-        end
-
-      false ->
+    case before_remove_hook_preflight(issue_context, workspace, nil) do
+      :skip ->
         :ok
+
+      :ok ->
+        maybe_run_local_before_remove_command(hooks.before_remove, workspace, issue_context)
     end
   end
 
-  defp maybe_run_before_remove_hook(workspace, worker_host) when is_binary(worker_host) do
+  defp maybe_run_before_remove_hook(workspace, issue_context, worker_host) when is_binary(worker_host) do
     hooks = Config.settings!().hooks
 
-    case hooks.before_remove do
-      nil ->
+    case before_remove_hook_preflight(issue_context, workspace, worker_host) do
+      :skip ->
         :ok
 
-      command ->
-        script =
-          [
-            remote_shell_assign("workspace", workspace),
-            "if [ -d \"$workspace\" ]; then",
-            "  cd \"$workspace\"",
-            "  #{command}",
-            "fi"
-          ]
-          |> Enum.join("\n")
-
-        run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms)
-        |> case do
-          {:ok, {output, status}} ->
-            handle_hook_command_result(
-              {output, status},
-              workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
-              "before_remove"
-            )
-
-          {:error, {:workspace_hook_timeout, "before_remove", _timeout_ms} = reason} ->
-            {:error, reason}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-        |> ignore_hook_failure()
+      :ok ->
+        maybe_run_remote_before_remove_command(
+          hooks.before_remove,
+          workspace,
+          issue_context,
+          worker_host
+        )
     end
   end
 
   defp ignore_hook_failure(:ok), do: :ok
   defp ignore_hook_failure({:error, _reason}), do: :ok
+
+  defp maybe_run_local_before_remove_command(nil, _workspace, _issue_context), do: :ok
+
+  defp maybe_run_local_before_remove_command(command, workspace, issue_context) do
+    if File.dir?(workspace) do
+      run_hook(command, workspace, issue_context, "before_remove", nil)
+      |> ignore_hook_failure()
+    else
+      :ok
+    end
+  end
+
+  defp maybe_run_remote_before_remove_command(nil, _workspace, _issue_context, _worker_host), do: :ok
+
+  defp maybe_run_remote_before_remove_command(command, workspace, issue_context, worker_host) do
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "if [ -d \"$workspace\" ]; then",
+        "  cd \"$workspace\"",
+        indented_lines(hook_environment_exports(issue_context), 2),
+        "  #{command}",
+        "fi"
+      ]
+      |> List.flatten()
+      |> Enum.join("\n")
+
+    run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms)
+    |> handle_before_remove_remote_result(workspace, issue_context)
+    |> ignore_hook_failure()
+  end
+
+  defp handle_before_remove_remote_result({:ok, {output, status}}, workspace, issue_context) do
+    handle_hook_command_result(
+      {output, status},
+      workspace,
+      issue_context,
+      "before_remove"
+    )
+  end
+
+  defp handle_before_remove_remote_result(
+         {:error, {:workspace_hook_timeout, "before_remove", _timeout_ms} = reason},
+         _workspace,
+         _issue_context
+       ) do
+    {:error, reason}
+  end
+
+  defp handle_before_remove_remote_result({:error, reason}, _workspace, _issue_context) do
+    {:error, reason}
+  end
 
   defp run_hook(command, workspace, issue_context, hook_name, nil) do
     timeout_ms = Config.settings!().hooks.timeout_ms
@@ -298,7 +336,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          env: hook_environment(issue_context),
+          stderr_to_stdout: true
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -319,7 +361,13 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "cd \"$workspace\""
+      ] ++ hook_environment_exports(issue_context) ++ [command]
+
+    case run_remote_command(worker_host, Enum.join(script, "\n"), timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -453,28 +501,128 @@ defmodule SymphonyElixir.Workspace do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
+  defp hook_environment(issue_context) do
+    [
+      {"SYMPHONY_PROJECT_SLUG", Map.get(issue_context, :project_slug) || ""},
+      {"SYMPHONY_PROJECT_NAME", Map.get(issue_context, :project_name) || ""},
+      {"SYMPHONY_REPO_CLONE_URL", Map.get(issue_context, :repo_clone_url) || ""},
+      {"SYMPHONY_GITHUB_REPO", Map.get(issue_context, :github_repo) || ""}
+    ]
+  end
+
+  defp hook_environment_exports(issue_context) do
+    issue_context
+    |> hook_environment()
+    |> Enum.map(fn {name, value} -> "export #{name}=#{shell_escape(value)}" end)
+  end
+
+  defp validate_tracker_project_mapping(issue_context) do
+    if tracker_project_mapping_missing?(issue_context) do
+      Logger.error("Missing tracker.projects mapping #{issue_log_context(issue_context)} project_slug=#{inspect(Map.get(issue_context, :project_slug))}")
+
+      {:error, missing_tracker_project_reason(issue_context)}
+    else
+      :ok
+    end
+  end
+
+  defp before_remove_hook_preflight(issue_context, workspace, worker_host) do
+    if tracker_project_mapping_missing?(issue_context) do
+      Logger.warning(
+        "Skipping workspace hook hook=before_remove #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host_for_log(worker_host)} reason=missing_tracker_project project_slug=#{inspect(Map.get(issue_context, :project_slug))}"
+      )
+
+      :skip
+    else
+      :ok
+    end
+  end
+
+  defp tracker_project_mapping_missing?(issue_context) do
+    Map.get(issue_context, :tracker_project_missing?) == true
+  end
+
+  defp missing_tracker_project_reason(issue_context) do
+    {:missing_tracker_project, Map.get(issue_context, :project_slug), Map.get(issue_context, :issue_identifier)}
+  end
+
+  defp indented_lines(lines, spaces) when is_list(lines) and is_integer(spaces) and spaces >= 0 do
+    prefix = String.duplicate(" ", spaces)
+    Enum.map(lines, &(prefix <> &1))
+  end
+
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp default_issue_context(workspace) when is_binary(workspace) do
+    %{issue_context(nil) | issue_identifier: Path.basename(workspace)}
+  end
+
+  defp removable_issue_context(%{identifier: identifier} = issue) when is_binary(identifier),
+    do: {:ok, issue_context(issue)}
+
+  defp removable_issue_context(%{"identifier" => identifier} = issue) when is_binary(identifier),
+    do: {:ok, issue_context(issue)}
+
+  defp removable_issue_context(identifier) when is_binary(identifier), do: {:ok, issue_context(identifier)}
+  defp removable_issue_context(_identifier), do: :error
+
+  defp issue_context(%{} = issue) do
+    project_slug = context_field(issue, :project_slug) |> normalize_context_value()
+    tracker_project = Config.tracker_project(project_slug)
+    tracker_project_missing? = tracker_project_missing?(project_slug, tracker_project)
+
     %{
-      issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_id: context_field(issue, :id),
+      issue_identifier: context_field(issue, :identifier) || "issue",
+      project_slug: project_slug,
+      project_name: context_field(issue, :project_name) |> normalize_context_value(),
+      repo_clone_url: tracker_project && Map.get(tracker_project, :clone_url),
+      github_repo: tracker_project && Map.get(tracker_project, :github_repo),
+      tracker_project_missing?: tracker_project_missing?
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      project_slug: nil,
+      project_name: nil,
+      repo_clone_url: nil,
+      github_repo: nil,
+      tracker_project_missing?: false
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      project_slug: nil,
+      project_name: nil,
+      repo_clone_url: nil,
+      github_repo: nil,
+      tracker_project_missing?: false
     }
+  end
+
+  defp context_field(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp normalize_context_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_context_value(_value), do: nil
+
+  defp tracker_project_missing?(project_slug, tracker_project) do
+    is_binary(project_slug) and project_slug != "" and is_nil(tracker_project) and
+      Config.settings!().tracker.projects != []
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do

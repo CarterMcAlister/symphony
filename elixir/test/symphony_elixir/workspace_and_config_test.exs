@@ -40,6 +40,85 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace bootstrap can resolve different repos per project via hook env" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-project-repos-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      alpha_repo = Path.join(test_root, "alpha")
+      beta_repo = Path.join(test_root, "beta")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      Enum.each([{alpha_repo, "alpha repo\n"}, {beta_repo, "beta repo\n"}], fn {repo_path, readme} ->
+        File.mkdir_p!(repo_path)
+        File.write!(Path.join(repo_path, "README.md"), readme)
+        System.cmd("git", ["-C", repo_path, "init", "-b", "main"])
+        System.cmd("git", ["-C", repo_path, "config", "user.name", "Test User"])
+        System.cmd("git", ["-C", repo_path, "config", "user.email", "test@example.com"])
+        System.cmd("git", ["-C", repo_path, "add", "README.md"])
+        System.cmd("git", ["-C", repo_path, "commit", "-m", "initial"])
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: alpha_repo, github_repo: "alliance/alpha"},
+          %{slug: "beta", clone_url: beta_repo, github_repo: "alliance/beta"}
+        ],
+        hook_after_create: "git clone \"$SYMPHONY_REPO_CLONE_URL\" ."
+      )
+
+      alpha_issue = %Issue{identifier: "MT-ALPHA", project_slug: "alpha", project_name: "Alpha"}
+      beta_issue = %Issue{identifier: "MT-BETA", project_slug: "beta", project_name: "Beta"}
+
+      assert {:ok, alpha_workspace} = Workspace.create_for_issue(alpha_issue)
+      assert {:ok, beta_workspace} = Workspace.create_for_issue(beta_issue)
+
+      assert File.read!(Path.join(alpha_workspace, "README.md")) == "alpha repo\n"
+      assert File.read!(Path.join(beta_workspace, "README.md")) == "beta repo\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace create fails clearly when tracker.projects is configured but issue project slug is unmapped" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-missing-project-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"}
+        ],
+        hook_after_create: "git clone \"$SYMPHONY_REPO_CLONE_URL\" ."
+      )
+
+      issue = %Issue{identifier: "MT-MISSING-REPO", project_slug: "beta", project_name: "Beta"}
+      expected_workspace = Path.join(workspace_root, "MT-MISSING-REPO")
+
+      assert {:error, {:missing_tracker_project, "beta", "MT-MISSING-REPO"}} =
+               Workspace.create_for_issue(issue)
+
+      refute File.exists?(expected_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -317,6 +396,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "state" => %{"name" => "Todo"},
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
+      "project" => %{"name" => "Alpha", "slugId" => "alpha"},
       "assignee" => %{
         "id" => "user-1"
       },
@@ -352,6 +432,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
+    assert issue.project_name == "Alpha"
+    assert issue.project_slug == "alpha"
     assert issue.assigned_to_worker
   end
 
@@ -386,6 +468,51 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(merged, & &1.identifier) == ["MT-1", "MT-2", "MT-3"]
   end
 
+  test "linear client filters issue fetches across multiple project slugs" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:multi_project_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "issue-1",
+                 "identifier" => "MT-1",
+                 "title" => "Alpha issue",
+                 "state" => %{"name" => "Todo"},
+                 "project" => %{"name" => "Alpha", "slugId" => "alpha"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               },
+               %{
+                 "id" => "issue-2",
+                 "identifier" => "MT-2",
+                 "title" => "Beta issue",
+                 "state" => %{"name" => "In Progress"},
+                 "project" => %{"name" => "Beta", "slugId" => "beta"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               }
+             ],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issues} =
+             Client.fetch_issues_by_states_for_test(["alpha", "beta"], ["Todo", "In Progress"], graphql_fun)
+
+    assert Enum.map(issues, &{&1.identifier, &1.project_slug}) == [{"MT-1", "alpha"}, {"MT-2", "beta"}]
+
+    assert_receive {:multi_project_query, query, variables}
+    assert query =~ "slugId: {in: $projectSlugs}"
+    assert variables.projectSlugs == ["alpha", "beta"]
+    assert variables.stateNames == ["Todo", "In Progress"]
+  end
+
   test "linear candidate fetch applies task label filtering when configured" do
     graphql_fun = fn query, variables ->
       send(self(), {:candidate_fetch, query, variables})
@@ -403,7 +530,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, []} =
              Client.fetch_candidate_issues_for_test(
-               "project",
+               ["project"],
                ["Todo", "In Progress"],
                "  Backend  ",
                graphql_fun
@@ -411,7 +538,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert_receive {:candidate_fetch, query,
                     %{
-                      projectSlug: "project",
+                      projectSlugs: ["project"],
                       stateNames: ["Todo", "In Progress"],
                       taskLabel: "Backend",
                       first: 50,
@@ -444,7 +571,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert_receive {:candidate_fetch, query, variables}
 
     assert %{
-             projectSlug: "project",
+             projectSlugs: ["project"],
              stateNames: ["Todo"],
              first: 50,
              relationFirst: 50,
@@ -453,6 +580,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     refute Map.has_key?(variables, :taskLabel)
     assert query =~ "SymphonyLinearPoll("
+    assert query =~ "slugId: {in: $projectSlugs}"
     refute query =~ "eqIgnoreCase: $taskLabel"
   end
 
@@ -860,6 +988,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace remove skips before_remove hook when tracker project mapping is missing" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hooks-missing-project-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      before_remove_marker = Path.join(test_root, "before_remove.log")
+
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"}
+        ],
+        hook_before_remove: "echo before_remove > \"#{before_remove_marker}\""
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-MISSING-PROJECT")
+      issue = %Issue{identifier: "MT-HOOKS-MISSING-PROJECT", project_slug: "beta", project_name: "Beta"}
+
+      assert :ok = Workspace.remove_issue_workspaces(issue)
+      refute File.exists?(workspace)
+      refute File.exists?(before_remove_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "config reads defaults for optional settings" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
@@ -882,6 +1044,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
+    assert config.tracker.project_slugs == []
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
@@ -1413,24 +1576,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_project_slugs: nil,
+        tracker_projects: [
+          %{slug: "alpha", clone_url: "git@github.com:alliance/alpha.git", github_repo: "alliance/alpha"}
+        ],
         worker_ssh_hosts: ["worker-01:2200"],
         hook_before_run: "echo before-run",
         hook_after_run: "echo after-run",
         hook_before_remove: "echo before-remove"
       )
 
+      issue = %Issue{identifier: "MT-SSH-WS", project_slug: "alpha", project_name: "Alpha"}
+
       assert Config.settings!().worker.ssh_hosts == ["worker-01:2200"]
       assert Config.settings!().workspace.root == workspace_root
-      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.remove_issue_workspaces("MT-SSH-WS", "worker-01:2200")
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01:2200")
+      assert :ok = Workspace.run_before_run_hook(workspace_path, issue, "worker-01:2200")
+      assert :ok = Workspace.run_after_run_hook(workspace_path, issue, "worker-01:2200")
+      assert :ok = Workspace.remove_issue_workspaces(issue, "worker-01:2200")
 
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
       assert trace =~ "__SYMPHONY_WORKSPACE__"
       assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
       assert trace =~ "${workspace#~/}"
+      assert trace =~ "export SYMPHONY_PROJECT_SLUG='\"'\"'alpha'\"'\"'"
+      assert trace =~ "export SYMPHONY_PROJECT_NAME='\"'\"'Alpha'\"'\"'"
+      assert trace =~ "export SYMPHONY_REPO_CLONE_URL='\"'\"'git@github.com:alliance/alpha.git'\"'\"'"
+      assert trace =~ "export SYMPHONY_GITHUB_REPO='\"'\"'alliance/alpha'\"'\"'"
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"

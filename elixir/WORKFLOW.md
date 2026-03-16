@@ -2,7 +2,10 @@
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slug: "symphony-21bd456fe49d"
+  projects:
+    - slug: "symphony-21bd456fe49d"
+      clone_url: "https://github.com/CarterMcAlister/symphony.git"
+      github_repo: "CarterMcAlister/symphony"
   # task_label: "backend"
   active_states:
     - Todo
@@ -21,12 +24,12 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/CarterMcAlister/symphony .
+    git clone --depth 1 "$SYMPHONY_REPO_CLONE_URL" .
     if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+      cd elixir && mise trust && mise run setup
     fi
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    cd elixir && mise exec -- mix workspace.before_remove --repo "$SYMPHONY_GITHUB_REPO"
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -70,6 +73,11 @@ Instructions:
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
+
+Repository defaults:
+
+- Use `cd elixir && mise run setup` to bootstrap dependencies and generated assets in this repo.
+- Use `cd elixir && mise run dev` to run Symphony locally when runtime validation is needed.
 
 ## Prerequisite: Linear MCP or `linear_graphql` tool is available
 

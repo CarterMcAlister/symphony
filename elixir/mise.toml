@@ -9,6 +9,11 @@ _.file = ".env"
 description = "Install Elixir dependencies"
 run = "mix setup"
 
+[tasks.dev]
+description = "Run Symphony through the Phoenix dev server with the default workflow"
+depends = ["setup"]
+run = "mix phx.server"
+
 [tasks.build]
 description = "Build the Symphony escript"
 run = "mix build"
