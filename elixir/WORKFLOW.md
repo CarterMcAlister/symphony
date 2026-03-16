@@ -79,7 +79,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 - Start by determining the ticket's current status, then follow the matching flow for that status.
 - Start every task by opening the tracking workpad comment and bringing it up to date before doing new implementation work.
-- If the issue has research documents attached, read `Research`, `Research - PRD`, and `Research - Questions` via `linear_graphql` before planning or coding.
+- If the issue has research documents attached, read `Research`, `Research - PRD`, and the `## Open Questions` comment via `linear_graphql` before planning or coding.
 - Spend extra effort up front on planning and verification design before implementation.
 - Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
 - Keep ticket metadata current (state, checklist, acceptance criteria, links).
@@ -95,6 +95,25 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Move status only when the matching quality bar is met.
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+- Treat repo-root `compound-engineering.local.md`, `docs/plans/`, `docs/solutions/`, `docs/brainstorms/`, and `todos/` as first-class workflow artifacts for this ticket.
+- When a compound prompt asks an interactive follow-up question in this unattended session, choose the deterministic default described in this workflow instead of waiting for human input.
+
+## Compound workflow contract
+
+- The research phase should already have:
+  - upserted `Research` and `Research - PRD`
+  - posted `## Open Questions`
+  - written a plan artifact under `docs/plans/`
+- If a `/prompts:workflows-*` command is unavailable in-session, use the repo-local fallback asset directly:
+  - planning fallback: `.codex/skills/ce:plan/SKILL.md`
+  - work fallback: `.codex/skills/ce:work/SKILL.md`
+  - review fallback: `.codex/skills/ce:review/SKILL.md`
+  - compound fallback: `.codex/skills/ce:compound/SKILL.md`
+- Unattended defaults for compound workflows:
+  - `/prompts:workflows-work` continues on the current feature branch and current workspace without asking for branch-choice confirmation
+  - `/prompts:workflows-review` should review the current branch in serial mode when context is non-trivial
+  - `/prompts:workflows-compound` should default to compact-safe mode unless the session is clearly fresh enough for full mode
+- Do not delete or down-scope `docs/plans/*`, `docs/solutions/*`, `docs/brainstorms/*`, or `todos/*` as cleanup; they are intentional compound-engineering artifacts.
 
 ## Related skills
 
@@ -146,9 +165,10 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If not found, create one workpad comment and use it for all updates.
     - Persist the workpad comment ID and only write progress updates to that ID.
 2.  Before new planning, fetch any research documents already attached to the issue:
-    - Read `Research`, `Research - PRD`, and `Research - Questions` when present.
+    - Read `Research`, `Research - PRD`, and the `## Open Questions` comment when present.
     - Treat those documents as the default handoff from the research phase and mirror the relevant findings in the workpad plan/notes.
     - If the documents are missing, proceed with direct issue investigation and record that fact in the workpad `Notes`.
+    - Resolve the plan handoff from `Research - PRD` first. If the recorded plan path is missing or stale, search `docs/plans/` for the latest ticket-specific plan file and note the result in the workpad.
 3.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
 4.  Immediately reconcile the workpad before new edits:
     - Check off items that are already done.
@@ -206,7 +226,15 @@ Use this only when completion is blocked by missing required tools or missing au
 2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
 3.  Load the existing workpad comment and treat it as the active execution checklist.
     - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
+3.5 Before direct implementation work, resolve the compound plan artifact:
+    - Prefer the `Plan path` recorded during the research phase.
+    - If no usable plan file exists yet, run compound planning now with the current issue plus `Research` and `Research - PRD`, but keep it unattended: no brainstorm/refinement questions, no menu pause, and no implementation from the planning command itself.
 4.  Implement against the hierarchical TODOs and keep the comment current:
+    - Run compound implementation against the plan artifact:
+      - Prefer `/prompts:workflows-work <plan_path>`.
+      - If the prompt command is unavailable, open and follow `.codex/skills/ce:work/SKILL.md` directly.
+      - Because this session is unattended, do not stop for branch-choice or proceed-confirmation prompts; continue on the existing feature branch and current workspace.
+    - Reconcile any `docs/plans/*` checkbox updates from the compound work phase back into the workpad immediately after each milestone.
     - Check off completed items.
     - Add newly discovered items in the appropriate section.
     - Keep parent/child structure intact as scope evolves.
@@ -221,6 +249,15 @@ Use this only when completion is blocked by missing required tools or missing au
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
+6.5 Before creating or updating the PR, run the compound review phase on the current branch:
+    - Prefer `/prompts:workflows-review <current-branch> --serial`.
+    - If the prompt command is unavailable, open and follow `.codex/skills/ce:review/SKILL.md` directly.
+    - Treat blocking findings and generated `todos/*` items as required pre-PR work. Resolve or explicitly dispose of them before continuing.
+6.6 After compound review is green and before opening the PR, run compound documentation:
+    - Prefer `/prompts:workflows-compound`.
+    - If the prompt command is unavailable, open and follow `.codex/skills/ce:compound/SKILL.md` directly.
+    - Because this is a long-running unattended session, choose compact-safe mode by default unless the context is clearly fresh enough for full mode.
+    - Ensure the result is a solution document under `docs/solutions/`.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
@@ -274,6 +311,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - PR feedback sweep is complete and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
+- Compound-engineering artifacts are present and current for the run (`docs/plans/*`, `docs/solutions/*`, and any blocking `todos/*` resolved).
 - If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
 
 ## Guardrails

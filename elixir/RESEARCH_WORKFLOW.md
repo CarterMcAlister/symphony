@@ -1,4 +1,4 @@
-You are running the dedicated research phase for Linear ticket `{{ issue.identifier }}`
+You are running the dedicated research and planning phase for Linear ticket `{{ issue.identifier }}`
 
 Issue context:
 Identifier: {{ issue.identifier }}
@@ -16,90 +16,30 @@ No description provided.
 
 Research instructions:
 
-1. This phase runs before implementation. Do not edit code, run git mutations, or create a PR from this turn.
-2. Use `linear_graphql` to load the current issue context before researching:
-   - issue comments
-   - issue attachments
-   - issue documents
-3. Gather the best available evidence for the ticket from:
-   - the Linear issue and linked discussion
-   - other relevant linear tickets
-   - relevant Slack conversations when the configured tools expose them (use agent-slack skill)
-   - official docs or primary-source web research when external documentation is needed
-   - Railway production logs or metrics when runtime evidence is needed and the configured tools expose them. (use-railway skill)
-4. Start in plan mode and produce a concise PRD/spec for the implementation phase.
-5. Upsert these Linear documents on the issue with exact, consistent titles:
+1. This phase runs before implementation. Do not edit application code, run git mutations, or create a PR from this turn.
+2. First execute the compound research workflow for this repository:
+   - Prefer `/prompts:workflows-research`.
+   - If that prompt command is unavailable in-session, open and follow `.codex/skills/workflows-research/SKILL.md` directly.
+   - This workflow must gather evidence across four lanes, using subagents or parallel tasks whenever supported:
+     - Slack conversations
+     - primary-source web docs
+     - project docs / local repo context
+     - related Linear tickets and linked discussion
+3. Upsert these exact Linear artifacts during the research pass:
    - `Research`
    - `Research - PRD`
-6. Reuse existing documents with those titles when they already exist. Update them instead of creating duplicates.
-7. Put the evidence trail, assumptions, and source links in `Research`.
-8. Put the implementation-ready PRD/spec in `Research - PRD`.
-9. Put every unresolved implementation question, open dependency, or missing access gap in a comment on the ticket titled `## Open Questions`
-10. If a source is unavailable in-session, record that gap in `Research` and continue with the remaining sources instead of asking a human for help.
-11. End the turn after the research documents are attached. The implementation workflow will start next.
-
-Recommended Linear GraphQL shapes:
-
-```graphql
-query IssueResearchContext($id: String!) {
-  issue(id: $id) {
-    id
-    identifier
-    title
-    description
-    url
-    comments(first: 50) {
-      nodes {
-        id
-        body
-        resolvedAt
-      }
-    }
-    attachments(first: 50) {
-      nodes {
-        id
-        title
-        url
-        sourceType
-      }
-    }
-    documents(first: 50) {
-      nodes {
-        id
-        title
-        url
-        content
-        updatedAt
-      }
-    }
-  }
-}
-```
-
-```graphql
-mutation CreateDocument($issueId: String!, $title: String!, $content: String!) {
-  documentCreate(
-    input: { issueId: $issueId, title: $title, content: $content }
-  ) {
-    success
-    document {
-      id
-      title
-      url
-    }
-  }
-}
-```
-
-```graphql
-mutation UpdateDocument($id: String!, $content: String!, $title: String) {
-  documentUpdate(id: $id, input: { title: $title, content: $content }) {
-    success
-    document {
-      id
-      title
-      url
-    }
-  }
-}
-```
+   - comment titled `## Open Questions`
+4. Reuse existing documents with those titles when they already exist. Update them instead of creating duplicates.
+5. If any source is unavailable in-session, record the exact gap in `Research` and continue with the remaining lanes instead of asking a human for help.
+6. After the research artifacts exist, immediately run compound planning for implementation:
+   - Prefer `/prompts:workflows-plan`.
+   - If the prompt command is unavailable in-session, open and follow `.codex/skills/ce:plan/SKILL.md` directly.
+7. The planning step is unattended. Override the plan workflow's interactive defaults:
+   - do not ask brainstorm or refinement questions
+   - treat the Linear ticket, `Research`, and `Research - PRD` as sufficient context
+   - write the plan artifact directly under `docs/plans/`
+   - do not wait for post-generation menu choices
+   - do not start implementation from this phase
+8. After the plan file is written, add a deterministic handoff to `Research - PRD` that records the plan path so the main implementation workflow can locate it without guessing.
+9. The only allowed repo write in this phase is compound planning output under `docs/plans/` and related research/planning support artifacts. Do not edit runtime code or tests.
+10. End the turn after `Research`, `Research - PRD`, `## Open Questions`, and the `docs/plans/` plan artifact are in place. The implementation workflow will continue from there.

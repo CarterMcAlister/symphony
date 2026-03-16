@@ -40,6 +40,17 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 5. Customize the copied `WORKFLOW.md` file for your project.
    - `RESEARCH_WORKFLOW.md` runs before `WORKFLOW.md` when it lives next to the active workflow
      file. Use it to capture research and PRD/spec handoff artifacts on the ticket before coding.
+   - If you are using compound-engineering workflows, keep the repo-root artifacts available from
+     the workspace root because Codex turns run there:
+     - `compound-engineering.local.md`
+     - `docs/plans/`
+     - `docs/solutions/`
+     - `docs/brainstorms/`
+     - `todos/`
+   - A research conductor can hand off from `/prompts:workflows-research` into
+     `/prompts:workflows-plan`, then let the main workflow drive
+     `/prompts:workflows-work`, `/prompts:workflows-review`, and
+     `/prompts:workflows-compound` while Symphony still owns Linear state, workpads, and PR flow.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear

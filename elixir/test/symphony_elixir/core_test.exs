@@ -119,6 +119,18 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
+  test "compound engineering repo assets exist at the workspace root" do
+    repo_root = Path.expand("..", File.cwd!())
+
+    assert File.regular?(Path.join(repo_root, "compound-engineering.local.md"))
+    assert File.regular?(Path.join(repo_root, ".codex/prompts/workflows-research.md"))
+    assert File.regular?(Path.join(repo_root, ".codex/skills/workflows-research/SKILL.md"))
+    assert File.regular?(Path.join(repo_root, "docs/plans/.gitkeep"))
+    assert File.regular?(Path.join(repo_root, "docs/brainstorms/.gitkeep"))
+    assert File.regular?(Path.join(repo_root, "docs/solutions/patterns/critical-patterns.md"))
+    assert File.regular?(Path.join(repo_root, "todos/.gitkeep"))
+  end
+
   test "linear api token resolves from LINEAR_API_KEY env var" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     env_api_key = "test-linear-api-key"
@@ -1042,6 +1054,32 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt == "Research packet for MT-781 attempt=1"
   end
 
+  test "in-repo RESEARCH_WORKFLOW.md renders correctly" do
+    research_workflow_path = Path.expand("RESEARCH_WORKFLOW.md", File.cwd!())
+
+    issue = %Issue{
+      identifier: "MT-615",
+      title: "Use compound research workflow",
+      description: "Render research handoff with compound planning",
+      state: "Todo",
+      url: "https://example.org/issues/MT-615/use-compound-research-workflow",
+      labels: ["research", "workflow"]
+    }
+
+    prompt = PromptBuilder.build_prompt(issue, workflow_path: research_workflow_path, attempt: 1)
+
+    assert prompt =~ "dedicated research and planning phase"
+    assert prompt =~ "/prompts:workflows-research"
+    assert prompt =~ ".codex/skills/workflows-research/SKILL.md"
+    assert prompt =~ "Slack conversations"
+    assert prompt =~ "primary-source web docs"
+    assert prompt =~ "/prompts:workflows-plan"
+    assert prompt =~ ".codex/skills/ce:plan/SKILL.md"
+    assert prompt =~ "docs/plans/"
+    assert prompt =~ "Research - PRD"
+    assert prompt =~ "do not start implementation from this phase"
+  end
+
   test "in-repo WORKFLOW.md renders correctly" do
     workflow_path = Workflow.workflow_file_path()
     Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
@@ -1070,6 +1108,18 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "## Compound workflow contract"
+    assert prompt =~ "## Open Questions"
+    assert prompt =~ "compound-engineering.local.md"
+    assert prompt =~ "/prompts:workflows-work <plan_path>"
+    assert prompt =~ ".codex/skills/ce:work/SKILL.md"
+    assert prompt =~ "/prompts:workflows-review <current-branch> --serial"
+    assert prompt =~ ".codex/skills/ce:review/SKILL.md"
+    assert prompt =~ "/prompts:workflows-compound"
+    assert prompt =~ ".codex/skills/ce:compound/SKILL.md"
+    assert prompt =~ "docs/plans/*"
+    assert prompt =~ "docs/solutions/*"
+    assert prompt =~ "todos/*"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end
